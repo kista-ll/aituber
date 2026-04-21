@@ -1,7 +1,7 @@
 # --- Audio I/O ---
 SAMPLE_RATE = 16000
 CHANNELS = 1
-INPUT_DEVICE = 4       # 例: 3 のように番号指定も可
+INPUT_DEVICE = 1       # 例: 3 のように番号指定も可
 OUTPUT_DEVICE = None
 OUTPUT_DEVICE_NAME = "Voicemeeter AUX Input"
 
