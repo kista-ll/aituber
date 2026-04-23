@@ -32,7 +32,8 @@ try:
         TTS_BASE_URL, TTS_SPEAKER, TTS_TIMEOUT_SEC,
         SYSTEM_PROMPT,
         MAX_RESPONSE_CHARS, ADD_SHORTENER_PROMPT,
-        OUTPUT_DEVICE_NAME
+        OUTPUT_DEVICE_NAME,
+        SILENT_REACTION_ENABLED, SILENT_REACTION_INTERVAL_SEC, SILENT_REACTION_PHRASES
     )
 except Exception as e:
     raise RuntimeError(
@@ -74,6 +75,10 @@ class Config:
     system_prompt: str = SYSTEM_PROMPT
     max_response_chars: int = MAX_RESPONSE_CHARS
     add_shortener_prompt: bool = ADD_SHORTENER_PROMPT
+
+    silent_reaction_enabled: bool = SILENT_REACTION_ENABLED
+    silent_reaction_interval_sec: float = SILENT_REACTION_INTERVAL_SEC
+    silent_reaction_phrases: tuple = SILENT_REACTION_PHRASES
 
 
 CFG = Config()
@@ -450,6 +455,14 @@ class Player:
 # メイン
 # =========================
 
+import random
+
+@dataclass
+class RuntimeState:
+    last_user_interaction_time: float
+    last_assistant_speech_time: float
+    last_silent_phrase: Optional[str] = None
+
 def main():
     print("=== 月野しずく AITuber ===")
     print("終了: Ctrl+C\n")
@@ -468,11 +481,45 @@ def main():
     except Exception as e:
         print(f"[WARMUP] skipped: {e}", flush=True)
 
+    state = RuntimeState(
+        last_user_interaction_time=time.monotonic(),
+        last_assistant_speech_time=time.monotonic()
+    )
+
     while True:
         try:
             audio = record_utterance(CFG)
+            now = time.monotonic()
             if audio is None:
+                if CFG.silent_reaction_enabled:
+                    if (now - state.last_user_interaction_time >= CFG.silent_reaction_interval_sec and 
+                        now - state.last_assistant_speech_time >= CFG.silent_reaction_interval_sec):
+                        
+                        phrases = list(CFG.silent_reaction_phrases)
+                        if not phrases:
+                            continue
+                            
+                        candidates = [p for p in phrases if p != state.last_silent_phrase]
+                        if not candidates:
+                            candidates = phrases
+                        
+                        phrase = random.choice(candidates)
+                        print(f"しずく (無音リアクション): {phrase}", flush=True)
+                        
+                        t_tts_s = t()
+                        wav = tts.synthesize_wav_bytes(phrase)
+                        log_time("TTS(Silent)", t() - t_tts_s)
+                        
+                        t_play_s = t()
+                        player.play_wav_bytes_interruptible(wav)
+                        log_time("PLAY(Silent)", t() - t_play_s)
+                        
+                        state.last_silent_phrase = phrase
+                        state.last_assistant_speech_time = time.monotonic()
                 continue
+
+            # 録音として有効なユーザー発話を受け取った時点で更新する
+            state.last_user_interaction_time = time.monotonic()
 
             t0 = t()
             user_text = stt.transcribe(audio)
@@ -501,6 +548,8 @@ def main():
             player.play_wav_bytes_interruptible(wav)
             t7 = t()
             log_time("PLAY", t7 - t6)
+
+            state.last_assistant_speech_time = time.monotonic()
 
             print("-" * 40, flush=True)
 
