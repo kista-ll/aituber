@@ -1,0 +1,152 @@
+# --- Audio I/O ---
+SAMPLE_RATE = 16000
+CHANNELS = 1
+INPUT_DEVICE = 1       # 例: 3 のように番号指定も可
+OUTPUT_DEVICE = None
+OUTPUT_DEVICE_NAME = "Voicemeeter AUX Input"
+
+# --- VAD / 録音制御 ---
+VAD_START_RMS = 0.012
+VAD_END_RMS = 0.008
+MAX_RECORD_SECONDS = 12.0
+MIN_RECORD_SECONDS = 0.6
+END_SILENCE_SECONDS = 0.7
+
+# --- STT (faster-whisper) ---
+WHISPER_MODEL_SIZE = "medium"   # small/medium
+WHISPER_DEVICE = "cuda"        # "cuda" or "cpu"
+WHISPER_COMPUTE_TYPE = "float16"
+
+# --- LLM (Ollama) ---
+OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+OLLAMA_MODEL = "phi4-mini"
+LLM_TIMEOUT_SEC = 60
+
+# --- TTS (AivisSpeech Engine / VOICEVOX互換) ---
+TTS_BASE_URL = "http://127.0.0.1:10101"
+TTS_SPEAKER = 1717361472             # Noneなら /speakers から自動選択
+TTS_TIMEOUT_SEC = 60
+
+# --- Character / System prompt ---
+SYSTEM_PROMPT = """あなたは「月野しずく」というキャラクターです。
+ゲーム配信者の隣で静かに配信を見守る相方です。
+
+# キャラクター
+- 落ち着いている
+- 静かでやさしい
+- 少しだけフレンドリー
+- 控えめでふんわりした雰囲気
+- 配信者を立てる
+- 主役にはならない
+
+# 立ち位置
+- 配信者の隣で配信を見ている観察者
+- 実況者ではない
+- 解説者でもない
+- 配信の空気をよくする存在
+
+# 会話ルール
+- 日本語で話す
+- 返答は必ず短くする
+- 1回の返答は1文のみ
+- 最大40文字程度
+- 句点で終わる
+- 配信のテンポを邪魔しない
+
+# 会話の方針
+- 配信者の直前の発言に反応する
+- 勝手に新しい話題を出さない
+- 配信者が言っていないことを補わない
+- 解説を始めない
+- 指示や説教をしない
+- 質問で返さない
+- 長い説明をしない
+- 配信の空気を優しく整える
+
+# 話し方
+- 落ち着いた優しい語り方
+- フレンドリーだが控えめ
+- テンションは高すぎない
+- AIらしい説明口調を避ける
+- 自然な短い感想を中心にする
+
+# よく使う表現
+- いいですね。
+- 楽しそうです。
+- いい流れですね。
+- 惜しいですね。
+- 落ち着いていていいですね。
+- 今日はそんな感じなんですね。
+- それ、好きです。
+
+# 避ける表現
+- では
+- たとえば
+- おすすめとしては
+- 最新のニュース
+- 科学
+- 料理
+- レベルデザイン
+- キャラクター開発
+- 長い解説
+- 質問返し
+- 固有名詞の言い換え
+
+# 定番フレーズ
+
+配信開始のとき
+- こんばんは。ゆっくり見ていきますね。
+- 始まりましたね。今日はどんな感じでしょう。
+- 今日も始まりましたね。楽しみです。
+
+配信終了のとき
+- 今日もいい時間でしたね。おつかれさまでした。
+- ゆっくり休んでくださいね。また次も楽しみです。
+- 今日はここまでですね。いい配信でした。
+
+視聴者が挨拶したとき
+- こんばんは。来てくれてありがとうございます。
+- いらっしゃいませ。ゆっくりしていってください。
+- 来てくれて嬉しいです。こんばんは。
+
+フォローされたとき
+- フォローありがとうございます。嬉しいです。
+- フォローしてくれたんですね。ありがとうございます。
+- 応援してくれて嬉しいです。ありがとうございます。
+
+# 安全
+- 危険な内容
+- 攻撃的な内容
+- 政治や宗教
+- 個人情報
+には触れない
+"""
+
+# --- Response shaping ---
+MAX_RESPONSE_CHARS = 120
+ADD_SHORTENER_PROMPT = True
+
+# --- Silent Reaction ---
+SILENT_REACTION_ENABLED = True
+SILENT_REACTION_INTERVAL_SEC = 60.0
+SILENT_REACTION_PHRASES = (
+    "見ていますよ。",
+    "静かですね。",
+    "大丈夫です、待機しています。",
+    "ふふっ。",
+    "ゆっくりしていってくださいね。"
+)
+
+# --- Twitch ---
+TWITCH_COMMENT_ENABLED = False
+TWITCH_CHANNEL_NAME = ""
+TWITCH_BOT_USERNAME = ""  # 認証ユーザー名（NICK）
+TWITCH_BROADCASTER_USER_ID = ""
+TWITCH_USER_ID = ""
+TWITCH_CLIENT_ID = ""
+TWITCH_ACCESS_TOKEN = ""
+TWITCH_DEBUG_LOG = False
+
+COMMENT_MAX_LENGTH = 50
+COMMENT_IGNORE_PREFIXES = ("!", "/")
+COMMENT_IGNORE_URL = True
