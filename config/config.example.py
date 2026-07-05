@@ -128,7 +128,7 @@ ADD_SHORTENER_PROMPT = True
 
 # --- Silent Reaction ---
 SILENT_REACTION_ENABLED = True
-SILENT_REACTION_INTERVAL_SEC = 60.0
+SILENT_REACTION_INTERVAL_SEC = 180.0
 SILENT_REACTION_PHRASES = (
     "見ていますよ。",
     "静かですね。",
@@ -137,8 +137,28 @@ SILENT_REACTION_PHRASES = (
     "ゆっくりしていってくださいね。"
 )
 
+# --- Conversation Control ---
+AI_SPEECH_COOLDOWN_SEC = 8.0
+STREAMER_RESPONSE_PROBABILITY = 0.25
+SHIZUKU_CALL_KEYWORDS = ("しずく", "シズク", "雫")
+STREAMER_FORCE_REPLY_KEYWORDS = ("しずく", "どう思う", "見て", "聞いて")
+
+# --- Game Mode ---
+GAME_MODE = "normal"  # "normal" or "battle"
+
+# --- Safety / Tone Control ---
+APOLOGY_SUPPRESSION_ENABLED = True
+APOLOGY_REPLACEMENT_PHRASES = (
+    "落ち着いていきましょう。",
+    "まだいけます。",
+    "惜しいですね。",
+    "切り替えていきましょう。",
+)
+
 # --- Twitch ---
 TWITCH_COMMENT_ENABLED = False
+TWITCH_COMMENT_PRIORITY = True
+TWITCH_COMMENT_COOLDOWN_SEC = 3.0
 TWITCH_CHANNEL_NAME = ""
 TWITCH_BOT_USERNAME = ""  # 認証ユーザー名（NICK）
 TWITCH_BROADCASTER_USER_ID = ""

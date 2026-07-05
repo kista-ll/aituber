@@ -19,11 +19,20 @@ import sounddevice as sd
 import soundfile as sf
 from faster_whisper import WhisperModel
 
+try:
+    from twitch_comment_reader import TwitchCommentReader
+except BaseException as e:
+    TwitchCommentReader = None
+    TWITCH_IMPORT_ERROR = e
+else:
+    TWITCH_IMPORT_ERROR = None
+
 
 # =========================================
 # config/config.py を読み込む
 # =========================================
 try:
+    from config import config as CONFIG_MODULE
     from config.config import (
         SAMPLE_RATE, CHANNELS, INPUT_DEVICE, OUTPUT_DEVICE,
         VAD_START_RMS, VAD_END_RMS, MAX_RECORD_SECONDS, MIN_RECORD_SECONDS, END_SILENCE_SECONDS,
@@ -40,6 +49,30 @@ except Exception as e:
         "config/config.py を読み込めませんでした。"
         "プロジェクト直下で `python src/shizuku_aituber.py` を実行しているか確認してください。"
     ) from e
+
+
+def config_value(name, default):
+    value = getattr(CONFIG_MODULE, name, default)
+    if not hasattr(CONFIG_MODULE, name):
+        setattr(CONFIG_MODULE, name, value)
+    return value
+
+
+AI_SPEECH_COOLDOWN_SEC = config_value("AI_SPEECH_COOLDOWN_SEC", 8.0)
+STREAMER_RESPONSE_PROBABILITY = config_value("STREAMER_RESPONSE_PROBABILITY", 0.25)
+SHIZUKU_CALL_KEYWORDS = config_value("SHIZUKU_CALL_KEYWORDS", ("しずく", "シズク", "雫"))
+STREAMER_FORCE_REPLY_KEYWORDS = config_value("STREAMER_FORCE_REPLY_KEYWORDS", ("しずく", "どう思う", "見て", "聞いて"))
+
+TWITCH_COMMENT_ENABLED = config_value("TWITCH_COMMENT_ENABLED", False)
+TWITCH_COMMENT_PRIORITY = config_value("TWITCH_COMMENT_PRIORITY", True)
+TWITCH_COMMENT_COOLDOWN_SEC = config_value("TWITCH_COMMENT_COOLDOWN_SEC", 3.0)
+
+GAME_MODE = config_value("GAME_MODE", "normal")
+APOLOGY_SUPPRESSION_ENABLED = config_value("APOLOGY_SUPPRESSION_ENABLED", True)
+APOLOGY_REPLACEMENT_PHRASES = config_value(
+    "APOLOGY_REPLACEMENT_PHRASES",
+    ("落ち着いていきましょう。", "まだいけます。", "惜しいですね。", "切り替えていきましょう。"),
+)
 
 
 # =========================
@@ -80,6 +113,19 @@ class Config:
     silent_reaction_interval_sec: float = SILENT_REACTION_INTERVAL_SEC
     silent_reaction_phrases: tuple = SILENT_REACTION_PHRASES
 
+    ai_speech_cooldown_sec: float = AI_SPEECH_COOLDOWN_SEC
+    streamer_response_probability: float = STREAMER_RESPONSE_PROBABILITY
+    shizuku_call_keywords: tuple = SHIZUKU_CALL_KEYWORDS
+    streamer_force_reply_keywords: tuple = STREAMER_FORCE_REPLY_KEYWORDS
+
+    twitch_comment_enabled: bool = TWITCH_COMMENT_ENABLED
+    twitch_comment_priority: bool = TWITCH_COMMENT_PRIORITY
+    twitch_comment_cooldown_sec: float = TWITCH_COMMENT_COOLDOWN_SEC
+
+    game_mode: str = GAME_MODE
+    apology_suppression_enabled: bool = APOLOGY_SUPPRESSION_ENABLED
+    apology_replacement_phrases: tuple = APOLOGY_REPLACEMENT_PHRASES
+
 
 CFG = Config()
 
@@ -106,6 +152,81 @@ def t() -> float:
 
 def log_time(label: str, dt: float) -> None:
     print(f"[TIME] {label:<5}: {dt:.2f}s", flush=True)
+
+
+def contains_keyword(text: str, keywords: tuple) -> bool:
+    normalized = text.lower()
+    return any(str(keyword).lower() in normalized for keyword in keywords if keyword)
+
+
+def contains_call_keyword(text: str, cfg: Config) -> bool:
+    return contains_keyword(text, cfg.shizuku_call_keywords)
+
+
+def is_cooldown_ready(now: float, last_time: float, cooldown_sec: float) -> bool:
+    return (now - last_time) >= max(0.0, cooldown_sec)
+
+
+def should_reply_to_streamer(text: str, now: float, state, cfg: Config) -> bool:
+    if contains_call_keyword(text, cfg) or contains_keyword(text, cfg.streamer_force_reply_keywords):
+        return True
+
+    if not is_cooldown_ready(now, state.last_assistant_speech_time, cfg.ai_speech_cooldown_sec):
+        print("[SKIP] AI speech cooldown", flush=True)
+        return False
+
+    probability = min(1.0, max(0.0, cfg.streamer_response_probability))
+    if random.random() > probability:
+        print("[SKIP] streamer speech probability", flush=True)
+        return False
+
+    return True
+
+
+def get_next_twitch_comment(comment_queue: Optional[queue.Queue]) -> Optional[dict]:
+    if comment_queue is None:
+        return None
+    try:
+        return comment_queue.get_nowait()
+    except queue.Empty:
+        return None
+
+
+def format_twitch_comment_for_llm(comment: dict) -> str:
+    username = str(comment.get("username", "視聴者")).strip() or "視聴者"
+    message = str(comment.get("message", "")).strip()
+    return f"{username}さんのコメント: {message}"
+
+
+def build_mode_prompt(cfg: Config) -> str:
+    mode = str(cfg.game_mode).strip().lower()
+    if mode == "battle":
+        return (
+            "GAME_MODE: battle\n"
+            "対戦ゲーム中です。短い応援、共感、状況リアクションを中心にしてください。"
+            "謝罪や説教を避け、強い言葉には落ち着いた一言で返してください。"
+        )
+    return (
+        "GAME_MODE: normal\n"
+        "通常配信です。落ち着いた相方として、控えめで短い反応をしてください。"
+    )
+
+
+def suppress_apology_reply(reply: str, cfg: Config) -> str:
+    apology_phrases = ("すみません", "ごめんなさい", "申し訳ありません", "申し訳ない", "ごめん")
+    if not contains_keyword(reply, apology_phrases):
+        return reply
+
+    stripped = reply.strip(" 、。")
+    apology_only = any(stripped == phrase for phrase in apology_phrases)
+    apology_heavy = len(stripped) <= 24
+    if not apology_only and not apology_heavy:
+        return reply
+
+    replacements = tuple(p for p in cfg.apology_replacement_phrases if p)
+    if not replacements:
+        return "落ち着いていきましょう。"
+    return random.choice(replacements)
 
 
 def resolve_output_device(cfg: Config) -> int:
@@ -291,6 +412,9 @@ class LLM:
         if not reply.endswith("。"):
             reply += "。"
 
+        if self.cfg.apology_suppression_enabled:
+            reply = suppress_apology_reply(reply, self.cfg)
+
         reply = clamp_text(reply, 40)
         if not reply.endswith("。"):
             reply += "。"
@@ -305,6 +429,7 @@ class LLM:
 
         messages = [
             {"role": "system", "content": self.cfg.system_prompt + extra},
+            {"role": "system", "content": build_mode_prompt(self.cfg)},
             {"role": "system", "content": f"現在の話題: {self.topic}"},
             *self.history,
             {"role": "user", "content": user_text},
@@ -461,6 +586,7 @@ import random
 class RuntimeState:
     last_user_interaction_time: float
     last_assistant_speech_time: float
+    last_twitch_comment_time: float = 0.0
     last_silent_phrase: Optional[str] = None
 
 def main():
@@ -471,6 +597,21 @@ def main():
     llm = LLM(CFG)
     tts = TTS(CFG)
     player = Player(CFG)
+
+    comment_queue = None
+    twitch_reader = None
+    if CFG.twitch_comment_enabled:
+        if TwitchCommentReader is None:
+            print(f"[Twitch] import failed. Twitch disabled: {TWITCH_IMPORT_ERROR}", flush=True)
+        else:
+            comment_queue = queue.Queue()
+            twitch_reader = TwitchCommentReader(CONFIG_MODULE, comment_queue)
+            try:
+                twitch_reader.start()
+            except Exception as e:
+                print(f"[Twitch] start failed. Twitch disabled: {e}", flush=True)
+                twitch_reader = None
+                comment_queue = None
 
     try:
         print("[WARMUP] LLM...", flush=True)
@@ -486,79 +627,121 @@ def main():
         last_assistant_speech_time=time.monotonic()
     )
 
-    while True:
-        try:
-            audio = record_utterance(CFG)
-            now = time.monotonic()
-            if audio is None:
-                if CFG.silent_reaction_enabled:
-                    if (now - state.last_user_interaction_time >= CFG.silent_reaction_interval_sec and 
-                        now - state.last_assistant_speech_time >= CFG.silent_reaction_interval_sec):
-                        
-                        phrases = list(CFG.silent_reaction_phrases)
-                        if not phrases:
-                            continue
+    def speak_with_llm(user_text: str, label: str) -> None:
+        t2 = t()
+        reply = llm.chat(user_text)
+        t3 = t()
+        log_time("LLM", t3 - t2)
+
+        print(f"しずく: {reply}", flush=True)
+
+        t4 = t()
+        wav = tts.synthesize_wav_bytes(reply)
+        t5 = t()
+        log_time("TTS", t5 - t4)
+
+        t6 = t()
+        player.play_wav_bytes_interruptible(wav)
+        t7 = t()
+        log_time("PLAY", t7 - t6)
+
+        state.last_assistant_speech_time = time.monotonic()
+        if label == "twitch":
+            state.last_twitch_comment_time = state.last_assistant_speech_time
+
+    def try_handle_twitch_comment() -> bool:
+        if not CFG.twitch_comment_priority:
+            return False
+
+        comment = get_next_twitch_comment(comment_queue)
+        if comment is None:
+            return False
+
+        now = time.monotonic()
+        user_text = format_twitch_comment_for_llm(comment)
+        if not is_cooldown_ready(now, state.last_assistant_speech_time, CFG.ai_speech_cooldown_sec):
+            print("[SKIP] Twitch comment: AI speech cooldown", flush=True)
+            return False
+        if not is_cooldown_ready(now, state.last_twitch_comment_time, CFG.twitch_comment_cooldown_sec):
+            print("[SKIP] Twitch comment: comment cooldown", flush=True)
+            return False
+
+        print(f"視聴者: {user_text}", flush=True)
+        state.last_user_interaction_time = now
+        speak_with_llm(user_text, "twitch")
+        print("-" * 40, flush=True)
+        return True
+
+    try:
+        while True:
+            try:
+                if try_handle_twitch_comment():
+                    continue
+
+                audio = record_utterance(CFG)
+                now = time.monotonic()
+
+                if try_handle_twitch_comment():
+                    continue
+
+                if audio is None:
+                    if CFG.silent_reaction_enabled:
+                        if (now - state.last_user_interaction_time >= CFG.silent_reaction_interval_sec and 
+                            now - state.last_assistant_speech_time >= CFG.silent_reaction_interval_sec):
                             
-                        candidates = [p for p in phrases if p != state.last_silent_phrase]
-                        if not candidates:
-                            candidates = phrases
-                        
-                        phrase = random.choice(candidates)
-                        print(f"しずく (無音リアクション): {phrase}", flush=True)
-                        
-                        t_tts_s = t()
-                        wav = tts.synthesize_wav_bytes(phrase)
-                        log_time("TTS(Silent)", t() - t_tts_s)
-                        
-                        t_play_s = t()
-                        player.play_wav_bytes_interruptible(wav)
-                        log_time("PLAY(Silent)", t() - t_play_s)
-                        
-                        state.last_silent_phrase = phrase
-                        state.last_assistant_speech_time = time.monotonic()
-                continue
+                            phrases = list(CFG.silent_reaction_phrases)
+                            if not phrases:
+                                continue
+                                
+                            candidates = [p for p in phrases if p != state.last_silent_phrase]
+                            if not candidates:
+                                candidates = phrases
+                            
+                            phrase = random.choice(candidates)
+                            print(f"しずく (無音リアクション): {phrase}", flush=True)
+                            
+                            t_tts_s = t()
+                            wav = tts.synthesize_wav_bytes(phrase)
+                            log_time("TTS(Silent)", t() - t_tts_s)
+                            
+                            t_play_s = t()
+                            player.play_wav_bytes_interruptible(wav)
+                            log_time("PLAY(Silent)", t() - t_play_s)
+                            
+                            state.last_silent_phrase = phrase
+                            state.last_assistant_speech_time = time.monotonic()
+                    continue
 
-            # 録音として有効なユーザー発話を受け取った時点で更新する
-            state.last_user_interaction_time = time.monotonic()
+                # 録音として有効なユーザー発話を受け取った時点で更新する
+                state.last_user_interaction_time = time.monotonic()
 
-            t0 = t()
-            user_text = stt.transcribe(audio)
-            t1 = t()
-            log_time("STT", t1 - t0)
+                t0 = t()
+                user_text = stt.transcribe(audio)
+                t1 = t()
+                log_time("STT", t1 - t0)
 
-            if not user_text:
-                print("認識結果: （空）", flush=True)
-                continue
+                if not user_text:
+                    print("認識結果: （空）", flush=True)
+                    continue
 
-            print(f"あなた: {user_text}", flush=True)
+                print(f"あなた: {user_text}", flush=True)
 
-            t2 = t()
-            reply = llm.chat(user_text)
-            t3 = t()
-            log_time("LLM", t3 - t2)
+                now = time.monotonic()
+                if not should_reply_to_streamer(user_text, now, state, CFG):
+                    continue
 
-            print(f"しずく: {reply}", flush=True)
+                speak_with_llm(user_text, "streamer")
+                print("-" * 40, flush=True)
 
-            t4 = t()
-            wav = tts.synthesize_wav_bytes(reply)
-            t5 = t()
-            log_time("TTS", t5 - t4)
-
-            t6 = t()
-            player.play_wav_bytes_interruptible(wav)
-            t7 = t()
-            log_time("PLAY", t7 - t6)
-
-            state.last_assistant_speech_time = time.monotonic()
-
-            print("-" * 40, flush=True)
-
-        except KeyboardInterrupt:
-            print("\n終了します。")
-            break
-        except Exception as e:
-            print(f"\nエラー: {e}\n", flush=True)
-            time.sleep(0.5)
+            except KeyboardInterrupt:
+                print("\n終了します。")
+                break
+            except Exception as e:
+                print(f"\nエラー: {e}\n", flush=True)
+                time.sleep(0.5)
+    finally:
+        if twitch_reader is not None:
+            twitch_reader.stop()
 
 
 if __name__ == "__main__":
