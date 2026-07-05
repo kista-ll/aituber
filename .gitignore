@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 audio_cache/
 config/config.py
+screen_event_eval*.csv
+screen_event_video_eval*.csv
+screen_event_frames/

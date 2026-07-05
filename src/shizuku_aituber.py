@@ -27,6 +27,14 @@ except BaseException as e:
 else:
     TWITCH_IMPORT_ERROR = None
 
+try:
+    from screen_event_detector import ScreenEventDetector
+except BaseException as e:
+    ScreenEventDetector = None
+    SCREEN_IMPORT_ERROR = e
+else:
+    SCREEN_IMPORT_ERROR = None
+
 
 # =========================================
 # config/config.py を読み込む
@@ -72,6 +80,31 @@ APOLOGY_SUPPRESSION_ENABLED = config_value("APOLOGY_SUPPRESSION_ENABLED", True)
 APOLOGY_REPLACEMENT_PHRASES = config_value(
     "APOLOGY_REPLACEMENT_PHRASES",
     ("落ち着いていきましょう。", "まだいけます。", "惜しいですね。", "切り替えていきましょう。"),
+)
+
+SCREEN_EVENT_ENABLED = config_value("SCREEN_EVENT_ENABLED", False)
+SCREEN_EVENT_MODE = config_value("SCREEN_EVENT_MODE", "death_detect_only")
+SCREEN_CAPTURE_INTERVAL_SEC = config_value("SCREEN_CAPTURE_INTERVAL_SEC", 0.25)
+SCREEN_CAPTURE_MONITOR_INDEX = config_value("SCREEN_CAPTURE_MONITOR_INDEX", 1)
+SCREEN_CAPTURE_WIDTH = config_value("SCREEN_CAPTURE_WIDTH", 640)
+SCREEN_CAPTURE_HEIGHT = config_value("SCREEN_CAPTURE_HEIGHT", 360)
+SCREEN_CAPTURE_REGION = config_value("SCREEN_CAPTURE_REGION", None)
+SCREEN_EVENT_DEBUG_LOG = config_value("SCREEN_EVENT_DEBUG_LOG", False)
+SCREEN_EVENT_LOG_EVERY_SEC = config_value("SCREEN_EVENT_LOG_EVERY_SEC", 10.0)
+
+DEATH_EVENT_COOLDOWN_SEC = config_value("DEATH_EVENT_COOLDOWN_SEC", 20.0)
+DEATH_EVENT_USE_LLM = config_value("DEATH_EVENT_USE_LLM", False)
+DEATH_EVENT_MIN_CONFIDENCE = config_value("DEATH_EVENT_MIN_CONFIDENCE", 0.72)
+DEATH_EVENT_MIN_TEMPLATE_SCORE = config_value("DEATH_EVENT_MIN_TEMPLATE_SCORE", 0.55)
+DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE = config_value("DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE", 0.40)
+DEATH_EVENT_WHITE_RATIO_MIN = config_value("DEATH_EVENT_WHITE_RATIO_MIN", 0.015)
+DEATH_EVENT_WHITE_RATIO_MAX = config_value("DEATH_EVENT_WHITE_RATIO_MAX", 0.18)
+DEATH_EVENT_ROI = config_value("DEATH_EVENT_ROI", (0.32, 0.21, 0.67, 0.54))
+DEATH_EVENT_TEXT_ROI = config_value("DEATH_EVENT_TEXT_ROI", (0.42, 0.33, 0.59, 0.46))
+DEATH_EVENT_TEMPLATE_PATH = config_value("DEATH_EVENT_TEMPLATE_PATH", "assets/templates/splatoon_death_yarareta.png")
+DEATH_EVENT_REACTION_PHRASES = config_value(
+    "DEATH_EVENT_REACTION_PHRASES",
+    ("今のはきついですね。", "これは悔しいですね。", "相手、やってますね。", "今の詰め方は強いですね。", "それは声出ますね。"),
 )
 
 
@@ -125,6 +158,28 @@ class Config:
     game_mode: str = GAME_MODE
     apology_suppression_enabled: bool = APOLOGY_SUPPRESSION_ENABLED
     apology_replacement_phrases: tuple = APOLOGY_REPLACEMENT_PHRASES
+
+    screen_event_enabled: bool = SCREEN_EVENT_ENABLED
+    screen_event_mode: str = SCREEN_EVENT_MODE
+    screen_capture_interval_sec: float = SCREEN_CAPTURE_INTERVAL_SEC
+    screen_capture_monitor_index: int = SCREEN_CAPTURE_MONITOR_INDEX
+    screen_capture_width: int = SCREEN_CAPTURE_WIDTH
+    screen_capture_height: int = SCREEN_CAPTURE_HEIGHT
+    screen_capture_region: Optional[tuple] = SCREEN_CAPTURE_REGION
+    screen_event_debug_log: bool = SCREEN_EVENT_DEBUG_LOG
+    screen_event_log_every_sec: float = SCREEN_EVENT_LOG_EVERY_SEC
+
+    death_event_cooldown_sec: float = DEATH_EVENT_COOLDOWN_SEC
+    death_event_use_llm: bool = DEATH_EVENT_USE_LLM
+    death_event_min_confidence: float = DEATH_EVENT_MIN_CONFIDENCE
+    death_event_min_template_score: float = DEATH_EVENT_MIN_TEMPLATE_SCORE
+    death_event_shape_min_template_score: float = DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE
+    death_event_white_ratio_min: float = DEATH_EVENT_WHITE_RATIO_MIN
+    death_event_white_ratio_max: float = DEATH_EVENT_WHITE_RATIO_MAX
+    death_event_roi: tuple = DEATH_EVENT_ROI
+    death_event_text_roi: tuple = DEATH_EVENT_TEXT_ROI
+    death_event_template_path: str = DEATH_EVENT_TEMPLATE_PATH
+    death_event_reaction_phrases: tuple = DEATH_EVENT_REACTION_PHRASES
 
 
 CFG = Config()
@@ -188,6 +243,19 @@ def get_next_twitch_comment(comment_queue: Optional[queue.Queue]) -> Optional[di
         return None
     try:
         return comment_queue.get_nowait()
+    except queue.Empty:
+        return None
+
+
+def has_queued_item(item_queue: Optional[queue.Queue]) -> bool:
+    return item_queue is not None and not item_queue.empty()
+
+
+def get_next_screen_event(event_queue: Optional[queue.Queue]):
+    if event_queue is None:
+        return None
+    try:
+        return event_queue.get_nowait()
     except queue.Empty:
         return None
 
@@ -587,6 +655,7 @@ class RuntimeState:
     last_user_interaction_time: float
     last_assistant_speech_time: float
     last_twitch_comment_time: float = 0.0
+    last_screen_event_time: float = 0.0
     last_silent_phrase: Optional[str] = None
 
 def main():
@@ -612,6 +681,18 @@ def main():
                 print(f"[Twitch] start failed. Twitch disabled: {e}", flush=True)
                 twitch_reader = None
                 comment_queue = None
+
+    screen_event_queue = None
+    screen_detector = None
+    if CFG.screen_event_enabled:
+        if ScreenEventDetector is None:
+            print(f"[SCREEN] disabled reason=import_failed error={SCREEN_IMPORT_ERROR}", flush=True)
+        else:
+            screen_event_queue = queue.Queue()
+            screen_detector = ScreenEventDetector(CFG, screen_event_queue)
+            screen_detector.start()
+    else:
+        print("[SCREEN] disabled", flush=True)
 
     try:
         print("[WARMUP] LLM...", flush=True)
@@ -672,10 +753,55 @@ def main():
         print("-" * 40, flush=True)
         return True
 
+    def speak_fixed_phrase(phrase: str, label: str) -> None:
+        print(f"しずく ({label}): {phrase}", flush=True)
+
+        t_tts_s = t()
+        wav = tts.synthesize_wav_bytes(phrase)
+        log_time(f"TTS({label})", t() - t_tts_s)
+
+        t_play_s = t()
+        player.play_wav_bytes_interruptible(wav)
+        log_time(f"PLAY({label})", t() - t_play_s)
+
+        state.last_assistant_speech_time = time.monotonic()
+
+    def try_handle_screen_event() -> bool:
+        event = get_next_screen_event(screen_event_queue)
+        if event is None:
+            return False
+
+        if has_queued_item(comment_queue):
+            print("[SKIP] screen_event priority lower than twitch_comment", flush=True)
+            return False
+
+        now = time.monotonic()
+        if not is_cooldown_ready(now, state.last_screen_event_time, CFG.death_event_cooldown_sec):
+            print("[SCREEN] skip reason=cooldown", flush=True)
+            return False
+
+        phrases = tuple(p for p in CFG.death_event_reaction_phrases if p)
+        if not phrases:
+            print("[SCREEN] skip reason=no_reaction_phrases", flush=True)
+            return False
+
+        event_type = getattr(event, "event_type", "unknown")
+        confidence = getattr(event, "confidence", 0.0)
+        print(f"[EVENT] source=screen_event type={event_type} confidence={confidence:.2f}", flush=True)
+        phrase = random.choice(phrases)
+        speak_fixed_phrase(phrase, "screen_event")
+        state.last_screen_event_time = time.monotonic()
+        state.last_user_interaction_time = state.last_screen_event_time
+        print("-" * 40, flush=True)
+        return True
+
     try:
         while True:
             try:
                 if try_handle_twitch_comment():
+                    continue
+
+                if try_handle_screen_event():
                     continue
 
                 audio = record_utterance(CFG)
@@ -685,6 +811,9 @@ def main():
                     continue
 
                 if audio is None:
+                    if try_handle_screen_event():
+                        continue
+
                     if CFG.silent_reaction_enabled:
                         if (now - state.last_user_interaction_time >= CFG.silent_reaction_interval_sec and 
                             now - state.last_assistant_speech_time >= CFG.silent_reaction_interval_sec):
@@ -740,6 +869,8 @@ def main():
                 print(f"\nエラー: {e}\n", flush=True)
                 time.sleep(0.5)
     finally:
+        if screen_detector is not None:
+            screen_detector.stop()
         if twitch_reader is not None:
             twitch_reader.stop()
 
