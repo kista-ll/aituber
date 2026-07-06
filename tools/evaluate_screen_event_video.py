@@ -21,6 +21,8 @@ class EvalConfig:
     death_event_shape_min_template_score = 0.40
     death_event_white_ratio_min = 0.015
     death_event_white_ratio_max = 0.18
+    death_event_shape_white_ratio_min = 0.04
+    death_event_shape_white_ratio_max = 0.14
 
 
 FIELDNAMES = [

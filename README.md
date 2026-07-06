@@ -107,14 +107,14 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 
 ## 画面イベント検出（実験機能）
 
-スプラトゥーンの死亡表示を軽量に検出して、短い固定文で反応する実験機能です。Phase 1ではOCRやLLMを使わず、中央付近のcrop領域、`やられた!` テンプレート、白文字分布、黒カード量から判定します。Twitchコメントより優先されず、発話連発は専用クールダウンで抑制します。
+スプラトゥーンの死亡表示を軽量に検出して、短い固定文で反応する実験機能です。Phase 1では中央付近のcrop領域、`やられた!` テンプレート、白文字分布、黒カード量から判定します。Phase 2では任意で死亡表示周辺だけOCRできます。Twitchコメントより優先されず、発話連発は専用クールダウンで抑制します。
 
 ### 設定項目 (`config/config.py`)
 
 | 設定名 | 初期値 | 役割・変更例 |
 | --- | --- | --- |
 | `SCREEN_EVENT_ENABLED` | `False` | 画面イベント検出のON/OFFです。まず動作確認時だけ `True` にします。 |
-| `SCREEN_EVENT_MODE` | `"death_detect_only"` | Phase 1では `"death_detect_only"` のみ使用します。 |
+| `SCREEN_EVENT_MODE` | `"death_detect_only"` | `"death_detect_only"` または `"death_ocr"`。OCRは死亡検出後だけ実行します。 |
 | `SCREEN_CAPTURE_INTERVAL_SEC` | `0.25` | 画面を確認する間隔です。短時間の死亡表示を拾うため、Phase 1では `0.25` を標準にします。 |
 | `SCREEN_CAPTURE_MONITOR_INDEX` | `1` | `mss` のモニター番号です。画面が違う場合に変更します。 |
 | `SCREEN_CAPTURE_WIDTH` / `SCREEN_CAPTURE_HEIGHT` | `640` / `360` | 判定用に縮小するサイズです。 |
@@ -125,9 +125,16 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | `DEATH_EVENT_MIN_TEMPLATE_SCORE` | `0.55` | 主判定のテンプレート一致しきい値です。 |
 | `DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE` | `0.40` | 補助判定でも必要な最低テンプレート一致度です。 |
 | `DEATH_EVENT_WHITE_RATIO_MIN` / `MAX` | `0.015` / `0.18` | 白文字量の下限/上限です。リザルトなど白文字過多を除外します。 |
+| `DEATH_EVENT_SHAPE_WHITE_RATIO_MIN` / `MAX` | `0.04` / `0.14` | 補助判定用の白文字量です。ロビーのリザルト表示の誤検知を抑えます。 |
 | `DEATH_EVENT_ROI` | `(0.32, 0.21, 0.67, 0.54)` | 死亡表示全体を見る正規化cropです。 |
 | `DEATH_EVENT_TEXT_ROI` | `(0.42, 0.33, 0.59, 0.46)` | `やられた!` 付近を見る正規化cropです。 |
 | `DEATH_EVENT_TEMPLATE_PATH` | `"assets/templates/splatoon_death_yarareta.png"` | 死亡表示テンプレート画像です。 |
+| `DEATH_EVENT_OCR_ROI` | `(0.34, 0.25, 0.66, 0.48)` | OCR対象の正規化cropです。死亡表示周辺だけを読みます。 |
+| `DEATH_EVENT_OCR_LANG` | `"jpn+eng"` | TesseractのOCR言語です。日本語データが必要です。 |
+| `DEATH_EVENT_OCR_CONFIG` | `"--psm 6"` | Tesseractのページ分割設定です。 |
+| `DEATH_EVENT_OCR_MIN_CONFIDENCE` | `0.0` | OCR結果をログ採用する最低confidenceです。 |
+| `DEATH_EVENT_OCR_SCALE` | `3.0` | OCR前にcropを拡大する倍率です。 |
+| `DEATH_EVENT_OCR_TESSERACT_CMD` | `""` | Tesseract実行ファイルのパスです。PATHが通っていない場合に指定します。 |
 | `DEATH_EVENT_REACTION_PHRASES` | `("今のはきついですね。", ...)` | 検出時にランダム再生する固定文です。 |
 
 標準設定:
@@ -167,6 +174,24 @@ python tools\evaluate_screen_events.py --csv screen_event_eval.csv
 ```
 
 出力には `final_score`, `template_score`, `shape_score`, `dark_ratio`, `white_ratio`, `cols_with_white`, `rows_with_white`, `reason` が含まれます。
+
+### OCR検証（Phase 2）
+
+OCRは死亡検出が成立した後だけ実行されます。固定文リアクションは維持し、OCR結果はログとイベントdetailsに入るだけです。LLMには渡しません。
+
+```python
+SCREEN_EVENT_MODE = "death_ocr"
+```
+
+`SCREEN_EVENT_MODE = "death_detect_only"` の場合は OCR を実行しないため、Tesseract本体、日本語言語データ、`pytesseract` が無くても従来どおり死亡検出だけで動作します。
+
+OCRには `pytesseract` と Tesseract本体が必要です。Tesseract本体にPATHが通っていない場合は、次のように指定します。
+
+```python
+DEATH_EVENT_OCR_TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+日本語を読む場合は Tesseract の `jpn` 言語データも必要です。環境が無い場合、死亡検出と固定文リアクションは継続し、OCRだけ `[SCREEN] OCR disabled` または `[SCREEN] OCR skip` になります。
 
 ### 動画検証
 

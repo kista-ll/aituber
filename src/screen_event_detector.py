@@ -23,6 +23,14 @@ except Exception as e:
 else:
     MSS_IMPORT_ERROR = None
 
+try:
+    import pytesseract
+except Exception as e:
+    pytesseract = None
+    PYTESSERACT_IMPORT_ERROR = e
+else:
+    PYTESSERACT_IMPORT_ERROR = None
+
 
 @dataclass
 class ScreenEvent:
@@ -47,6 +55,13 @@ class DeathDetectionResult:
 
 
 @dataclass
+class OcrResult:
+    text: str
+    confidence: float
+    reason: str = ""
+
+
+@dataclass
 class DeathDetectionThresholds:
     template_min_score: float = 0.55
     shape_min_template_score: float = 0.40
@@ -55,7 +70,7 @@ class DeathDetectionThresholds:
     white_ratio_min: float = 0.015
     white_ratio_max: float = 0.18
     shape_white_ratio_min: float = 0.04
-    shape_white_ratio_max: float = 0.16
+    shape_white_ratio_max: float = 0.14
     min_cols_with_white: float = 0.18
     min_rows_with_white: float = 0.08
     shape_min_cols_with_white: float = 0.20
@@ -82,6 +97,10 @@ def crop_roi(image: np.ndarray, roi: Tuple[float, float, float, float]) -> np.nd
     height, width = image.shape[:2]
     x1, y1, x2, y2 = _as_int_box(roi, width, height)
     return image[y1:y2, x1:x2]
+
+
+def normalize_ocr_text(text: str) -> str:
+    return "".join(str(text).split())
 
 
 def _resolve_template_path(path: str) -> Path:
@@ -169,7 +188,7 @@ def get_thresholds(cfg) -> DeathDetectionThresholds:
         white_ratio_min=float(getattr(cfg, "death_event_white_ratio_min", 0.015)),
         white_ratio_max=float(getattr(cfg, "death_event_white_ratio_max", 0.18)),
         shape_white_ratio_min=float(getattr(cfg, "death_event_shape_white_ratio_min", 0.04)),
-        shape_white_ratio_max=float(getattr(cfg, "death_event_shape_white_ratio_max", 0.16)),
+        shape_white_ratio_max=float(getattr(cfg, "death_event_shape_white_ratio_max", 0.14)),
         min_cols_with_white=float(getattr(cfg, "death_event_min_cols_with_white", 0.18)),
         min_rows_with_white=float(getattr(cfg, "death_event_min_rows_with_white", 0.08)),
         shape_min_cols_with_white=float(getattr(cfg, "death_event_shape_min_cols_with_white", 0.20)),
@@ -312,6 +331,76 @@ def format_detection_metrics(result: DeathDetectionResult) -> str:
     )
 
 
+def _ocr_enabled(cfg) -> bool:
+    return getattr(cfg, "screen_event_mode", "death_detect_only") == "death_ocr"
+
+
+def configure_tesseract(cfg) -> None:
+    if pytesseract is None:
+        return
+    command = str(getattr(cfg, "death_event_ocr_tesseract_cmd", "") or "").strip()
+    if command:
+        pytesseract.pytesseract.tesseract_cmd = command
+
+
+def preprocess_ocr_crop(image: np.ndarray, cfg) -> np.ndarray:
+    scale = max(1.0, float(getattr(cfg, "death_event_ocr_scale", 3.0)))
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    if scale != 1.0:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, binary = cv2.threshold(gray, 170, 255, cv2.THRESH_BINARY)
+    return cv2.copyMakeBorder(binary, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=0)
+
+
+def ocr_death_text(image: np.ndarray, cfg) -> OcrResult:
+    if not _ocr_enabled(cfg):
+        return OcrResult("", 0.0, "disabled")
+    if cv2 is None:
+        return OcrResult("", 0.0, "cv2_unavailable")
+    if pytesseract is None:
+        return OcrResult("", 0.0, f"pytesseract_unavailable:{PYTESSERACT_IMPORT_ERROR}")
+
+    ocr_roi = getattr(cfg, "death_event_ocr_roi", getattr(cfg, "death_event_roi", (0.32, 0.21, 0.67, 0.54)))
+    crop = crop_roi(image, ocr_roi)
+    processed = preprocess_ocr_crop(crop, cfg)
+    lang = str(getattr(cfg, "death_event_ocr_lang", "jpn+eng") or "jpn+eng")
+    tesseract_config = str(getattr(cfg, "death_event_ocr_config", "--psm 6") or "--psm 6")
+    min_confidence = float(getattr(cfg, "death_event_ocr_min_confidence", 0.0))
+
+    try:
+        data = pytesseract.image_to_data(
+            processed,
+            lang=lang,
+            config=tesseract_config,
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception as e:
+        return OcrResult("", 0.0, f"ocr_error:{e}")
+
+    parts = []
+    confidences = []
+    for text, confidence in zip(data.get("text", []), data.get("conf", [])):
+        normalized = normalize_ocr_text(text)
+        if not normalized:
+            continue
+        try:
+            confidence_value = float(confidence)
+        except Exception:
+            confidence_value = -1.0
+        if confidence_value >= 0:
+            confidences.append(confidence_value)
+        parts.append(normalized)
+
+    text = normalize_ocr_text("".join(parts))
+    confidence = float(sum(confidences) / len(confidences)) if confidences else 0.0
+    if not text:
+        return OcrResult("", confidence, "empty")
+    if confidence < min_confidence:
+        return OcrResult(text, confidence, "low_confidence")
+    return OcrResult(text, confidence, "ok")
+
+
 class ScreenEventDetector:
     def __init__(self, cfg, output_queue: queue.Queue):
         self.cfg = cfg
@@ -338,6 +427,12 @@ class ScreenEventDetector:
             print("[SCREEN] disabled reason=template_unavailable", flush=True)
             return
         print(f"[SCREEN] templates loaded count={len(self.templates)}", flush=True)
+        if _ocr_enabled(self.cfg):
+            configure_tesseract(self.cfg)
+            if pytesseract is None:
+                print(f"[SCREEN] OCR disabled reason=pytesseract_unavailable error={PYTESSERACT_IMPORT_ERROR}", flush=True)
+            else:
+                print("[SCREEN] OCR enabled backend=tesseract", flush=True)
         self.running = True
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -396,7 +491,20 @@ class ScreenEventDetector:
                             if now - self.last_emit_time < cooldown:
                                 print("[SCREEN] skip reason=cooldown", flush=True)
                             else:
+                                ocr_result = ocr_death_text(image, self.cfg)
                                 print(f"[SCREEN] detected type=death {format_detection_metrics(result)}", flush=True)
+                                if _ocr_enabled(self.cfg):
+                                    if ocr_result.reason == "ok":
+                                        print(
+                                            f"[SCREEN] OCR text={ocr_result.text} confidence={ocr_result.confidence:.1f}",
+                                            flush=True,
+                                        )
+                                    else:
+                                        print(
+                                            f"[SCREEN] OCR skip reason={ocr_result.reason} "
+                                            f"text={ocr_result.text} confidence={ocr_result.confidence:.1f}",
+                                            flush=True,
+                                        )
                                 self.output_queue.put(ScreenEvent(
                                     event_type="death",
                                     confidence=result.final_score,
@@ -409,6 +517,9 @@ class ScreenEventDetector:
                                         "white_ratio": result.white_ratio,
                                         "cols_with_white": result.cols_with_white,
                                         "rows_with_white": result.rows_with_white,
+                                        "ocr_text": ocr_result.text,
+                                        "ocr_confidence": ocr_result.confidence,
+                                        "ocr_reason": ocr_result.reason,
                                     },
                                 ))
                                 self.last_emit_time = now
@@ -428,6 +539,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test screen death detection against an image file.")
     parser.add_argument("image")
     parser.add_argument("--template", default="assets/templates/splatoon_death_yarareta.png")
+    parser.add_argument("--ocr", action="store_true", help="Run OCR when death is detected.")
+    parser.add_argument("--ocr-lang", default="jpn+eng")
+    parser.add_argument("--tesseract-cmd", default="")
     args = parser.parse_args()
 
     class _Cfg:
@@ -436,6 +550,13 @@ if __name__ == "__main__":
         death_event_template_path = args.template
         screen_capture_width = 640
         screen_capture_height = 360
+        screen_event_mode = "death_ocr" if args.ocr else "death_detect_only"
+        death_event_ocr_roi = (0.34, 0.25, 0.66, 0.48)
+        death_event_ocr_lang = args.ocr_lang
+        death_event_ocr_config = "--psm 6"
+        death_event_ocr_min_confidence = 0.0
+        death_event_ocr_scale = 3.0
+        death_event_ocr_tesseract_cmd = args.tesseract_cmd
 
     if cv2 is None:
         raise SystemExit(f"cv2 is unavailable: {CV2_IMPORT_ERROR}")
@@ -446,3 +567,6 @@ if __name__ == "__main__":
     tpl = load_templates(args.template)
     result = detect_death_event(rgb, _Cfg, tpl)
     print(result)
+    if args.ocr and result.detected:
+        configure_tesseract(_Cfg)
+        print(ocr_death_text(rgb, _Cfg))

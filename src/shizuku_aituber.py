@@ -99,9 +99,17 @@ DEATH_EVENT_MIN_TEMPLATE_SCORE = config_value("DEATH_EVENT_MIN_TEMPLATE_SCORE", 
 DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE = config_value("DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE", 0.40)
 DEATH_EVENT_WHITE_RATIO_MIN = config_value("DEATH_EVENT_WHITE_RATIO_MIN", 0.015)
 DEATH_EVENT_WHITE_RATIO_MAX = config_value("DEATH_EVENT_WHITE_RATIO_MAX", 0.18)
+DEATH_EVENT_SHAPE_WHITE_RATIO_MIN = config_value("DEATH_EVENT_SHAPE_WHITE_RATIO_MIN", 0.04)
+DEATH_EVENT_SHAPE_WHITE_RATIO_MAX = config_value("DEATH_EVENT_SHAPE_WHITE_RATIO_MAX", 0.14)
 DEATH_EVENT_ROI = config_value("DEATH_EVENT_ROI", (0.32, 0.21, 0.67, 0.54))
 DEATH_EVENT_TEXT_ROI = config_value("DEATH_EVENT_TEXT_ROI", (0.42, 0.33, 0.59, 0.46))
 DEATH_EVENT_TEMPLATE_PATH = config_value("DEATH_EVENT_TEMPLATE_PATH", "assets/templates/splatoon_death_yarareta.png")
+DEATH_EVENT_OCR_ROI = config_value("DEATH_EVENT_OCR_ROI", (0.34, 0.25, 0.66, 0.48))
+DEATH_EVENT_OCR_LANG = config_value("DEATH_EVENT_OCR_LANG", "jpn+eng")
+DEATH_EVENT_OCR_CONFIG = config_value("DEATH_EVENT_OCR_CONFIG", "--psm 6")
+DEATH_EVENT_OCR_MIN_CONFIDENCE = config_value("DEATH_EVENT_OCR_MIN_CONFIDENCE", 0.0)
+DEATH_EVENT_OCR_SCALE = config_value("DEATH_EVENT_OCR_SCALE", 3.0)
+DEATH_EVENT_OCR_TESSERACT_CMD = config_value("DEATH_EVENT_OCR_TESSERACT_CMD", "")
 DEATH_EVENT_REACTION_PHRASES = config_value(
     "DEATH_EVENT_REACTION_PHRASES",
     ("今のはきついですね。", "これは悔しいですね。", "相手、やってますね。", "今の詰め方は強いですね。", "それは声出ますね。"),
@@ -176,9 +184,17 @@ class Config:
     death_event_shape_min_template_score: float = DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE
     death_event_white_ratio_min: float = DEATH_EVENT_WHITE_RATIO_MIN
     death_event_white_ratio_max: float = DEATH_EVENT_WHITE_RATIO_MAX
+    death_event_shape_white_ratio_min: float = DEATH_EVENT_SHAPE_WHITE_RATIO_MIN
+    death_event_shape_white_ratio_max: float = DEATH_EVENT_SHAPE_WHITE_RATIO_MAX
     death_event_roi: tuple = DEATH_EVENT_ROI
     death_event_text_roi: tuple = DEATH_EVENT_TEXT_ROI
     death_event_template_path: str = DEATH_EVENT_TEMPLATE_PATH
+    death_event_ocr_roi: tuple = DEATH_EVENT_OCR_ROI
+    death_event_ocr_lang: str = DEATH_EVENT_OCR_LANG
+    death_event_ocr_config: str = DEATH_EVENT_OCR_CONFIG
+    death_event_ocr_min_confidence: float = DEATH_EVENT_OCR_MIN_CONFIDENCE
+    death_event_ocr_scale: float = DEATH_EVENT_OCR_SCALE
+    death_event_ocr_tesseract_cmd: str = DEATH_EVENT_OCR_TESSERACT_CMD
     death_event_reaction_phrases: tuple = DEATH_EVENT_REACTION_PHRASES
 
 
@@ -787,7 +803,14 @@ def main():
 
         event_type = getattr(event, "event_type", "unknown")
         confidence = getattr(event, "confidence", 0.0)
+        details = getattr(event, "details", {}) or {}
         print(f"[EVENT] source=screen_event type={event_type} confidence={confidence:.2f}", flush=True)
+        if details.get("ocr_text"):
+            print(
+                f"[EVENT] screen_event ocr_text={details.get('ocr_text')} "
+                f"ocr_confidence={float(details.get('ocr_confidence', 0.0)):.1f}",
+                flush=True,
+            )
         phrase = random.choice(phrases)
         speak_fixed_phrase(phrase, "screen_event")
         state.last_screen_event_time = time.monotonic()
