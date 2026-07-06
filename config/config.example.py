@@ -199,7 +199,19 @@ DEATH_EVENT_OCR_LANG = "jpn+eng"
 DEATH_EVENT_OCR_CONFIG = "--psm 6"
 DEATH_EVENT_OCR_MIN_CONFIDENCE = 0.0
 DEATH_EVENT_OCR_SCALE = 3.0
+DEATH_EVENT_OCR_PREPROCESS_MODE = "default"  # "default", "threshold", "adaptive", "invert_threshold", "sharpen_threshold"
 DEATH_EVENT_OCR_TESSERACT_CMD = ""  # 例: r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+DEATH_EVENT_OCR_DEBUG_LOG = False
+DEATH_EVENT_OCR_SAVE_DEBUG_IMAGES = False
+DEATH_EVENT_OCR_DEBUG_DIR = "debug/ocr"
+DEATH_EVENT_USE_CATEGORY_REACTIONS = True
+DEATH_EVENT_CATEGORY_DEBUG_LOG = False
+DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE = 60.0
+DEATH_EVENT_WEAPON_KEYWORDS = None  # None の場合は src/screen_event_reactions.py の標準辞書を使います。
+DEATH_EVENT_REACTIONS_BY_CATEGORY = None  # None の場合は標準固定文を使います。
+DEATH_EVENT_UNKNOWN_USE_LLM = False  # Phase3では未使用。将来拡張用です。
+DEATH_EVENT_UNKNOWN_LLM_RATE = 0.2
+DEATH_EVENT_UNKNOWN_LLM_COOLDOWN_SEC = 60.0
 DEATH_EVENT_REACTION_PHRASES = (
     "今のはきついですね。",
     "これは悔しいですね。",

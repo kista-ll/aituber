@@ -8,7 +8,8 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from screen_event_detector import cv2, detect_death_event, load_templates  # noqa: E402
+from screen_event_detector import cv2, detect_death_event, ocr_death_text, load_templates, parse_roi  # noqa: E402
+from screen_event_reactions import select_death_reaction  # noqa: E402
 
 
 class EvalConfig:
@@ -23,6 +24,18 @@ class EvalConfig:
     death_event_white_ratio_max = 0.18
     death_event_shape_white_ratio_min = 0.04
     death_event_shape_white_ratio_max = 0.14
+    screen_event_mode = "death_detect_only"
+    death_event_ocr_roi = (0.34, 0.25, 0.66, 0.48)
+    death_event_ocr_lang = "jpn+eng"
+    death_event_ocr_config = "--psm 6"
+    death_event_ocr_min_confidence = 0.0
+    death_event_ocr_scale = 3.0
+    death_event_ocr_preprocess_mode = "default"
+    death_event_ocr_tesseract_cmd = ""
+    death_event_use_category_reactions = True
+    death_event_ocr_category_min_confidence = 60.0
+    death_event_weapon_keywords = None
+    death_event_reactions_by_category = None
 
 
 FIELDNAMES = [
@@ -40,6 +53,19 @@ FIELDNAMES = [
     "cols_with_white",
     "rows_with_white",
     "reason",
+    "ocr_preprocess_mode",
+    "ocr_roi",
+    "ocr_scale",
+    "ocr_text",
+    "ocr_confidence",
+    "ocr_reason",
+    "normalized_ocr_text",
+    "weapon_category",
+    "emotion_category",
+    "selected_reaction",
+    "reaction_source",
+    "matched_keywords",
+    "category_reason",
 ]
 
 
@@ -91,7 +117,19 @@ def frame_to_rgb(frame):
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
-def result_to_row(video_path: Path, interval: float, timestamp: float, frame_index: int, result, emitted: bool):
+def reaction_from_ocr(ocr_result, cfg):
+    details = {}
+    if ocr_result is not None:
+        details = {
+            "ocr_text": getattr(ocr_result, "text", ""),
+            "ocr_confidence": getattr(ocr_result, "confidence", 0.0),
+            "ocr_reason": getattr(ocr_result, "reason", ""),
+        }
+    return select_death_reaction(details, cfg)
+
+
+def result_to_row(video_path: Path, interval: float, timestamp: float, frame_index: int, result, emitted: bool, cfg, ocr_result=None):
+    reaction = reaction_from_ocr(ocr_result, cfg) if result.detected else {}
     return {
         "video_path": str(video_path),
         "interval_sec": f"{interval:.3f}",
@@ -107,6 +145,19 @@ def result_to_row(video_path: Path, interval: float, timestamp: float, frame_ind
         "cols_with_white": f"{result.cols_with_white:.6f}",
         "rows_with_white": f"{result.rows_with_white:.6f}",
         "reason": result.reason,
+        "ocr_preprocess_mode": getattr(ocr_result, "preprocess_mode", ""),
+        "ocr_roi": repr(getattr(ocr_result, "roi", "")) if ocr_result is not None else "",
+        "ocr_scale": f"{getattr(ocr_result, 'scale', 0.0):.6f}" if ocr_result is not None else "",
+        "ocr_text": getattr(ocr_result, "text", ""),
+        "ocr_confidence": f"{getattr(ocr_result, 'confidence', 0.0):.6f}" if ocr_result is not None else "",
+        "ocr_reason": getattr(ocr_result, "reason", ""),
+        "normalized_ocr_text": reaction.get("normalized_ocr_text", ""),
+        "weapon_category": reaction.get("weapon_category", ""),
+        "emotion_category": reaction.get("emotion_category", ""),
+        "selected_reaction": reaction.get("phrase", ""),
+        "reaction_source": reaction.get("reaction_source", ""),
+        "matched_keywords": ",".join(reaction.get("matched_keywords", ())),
+        "category_reason": reaction.get("category_reason", ""),
     }
 
 
@@ -126,6 +177,24 @@ def update_summary(summary, row):
         summary["emitted"] += 1
 
 
+def parse_modes(value: str):
+    modes = []
+    for part in value.split(","):
+        mode = part.strip()
+        if mode:
+            modes.append(mode)
+    return modes or ["default"]
+
+
+def parse_rois(value: str):
+    rois = []
+    for part in value.split(";"):
+        roi = part.strip()
+        if roi:
+            rois.append(parse_roi(roi))
+    return rois
+
+
 def evaluate_video(
     video_path: Path,
     intervals,
@@ -136,6 +205,9 @@ def evaluate_video(
     save_high_score_dir: Path | None,
     high_score_threshold: float,
     max_seconds: float | None = None,
+    run_ocr: bool = False,
+    ocr_modes=None,
+    ocr_rois=None,
 ):
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
@@ -178,8 +250,23 @@ def evaluate_video(
             timestamp = frame_index / fps
             result = result_cache.get(frame_index)
             if result is None:
-                result = detect_death_event(frame_to_rgb(frame), cfg, templates)
+                rgb_frame = frame_to_rgb(frame)
+                result = detect_death_event(rgb_frame, cfg, templates)
                 result_cache[frame_index] = result
+            else:
+                rgb_frame = None
+
+            ocr_results = [None]
+            if run_ocr and result.detected:
+                if rgb_frame is None:
+                    rgb_frame = frame_to_rgb(frame)
+                ocr_results = []
+                cfg.death_event_ocr_debug_source_name = f"{video_path.stem}_t-{timestamp:.3f}_f-{frame_index}"
+                for roi in (ocr_rois or [cfg.death_event_ocr_roi]):
+                    cfg.death_event_ocr_roi = roi
+                    for mode in (ocr_modes or ["default"]):
+                        cfg.death_event_ocr_preprocess_mode = mode
+                        ocr_results.append(ocr_death_text(rgb_frame, cfg))
 
             for interval, state in states_to_sample:
                 emitted = False
@@ -192,9 +279,11 @@ def evaluate_video(
                 elif save_high_score_dir is not None and result.final_score >= high_score_threshold:
                     save_frame(frame, save_high_score_dir, result.reason or "high_score", interval, timestamp, frame_index)
 
-                row = result_to_row(video_path, interval, timestamp, frame_index, result, emitted)
-                rows.append(row)
-                update_summary(state["summary"], row)
+                for ocr_result in ocr_results:
+                    row = result_to_row(video_path, interval, timestamp, frame_index, result, emitted, cfg, ocr_result)
+                    rows.append(row)
+                    if ocr_result is ocr_results[0]:
+                        update_summary(state["summary"], row)
                 state["next_frame"] += state["step_frames"]
 
         frame_index += 1
@@ -312,6 +401,19 @@ def main():
     )
     parser.add_argument("--csv", dest="csv_path", default=None, help="Optional CSV output path.")
     parser.add_argument("--template", default=EvalConfig.death_event_template_path, help="Template path.")
+    parser.add_argument("--ocr", action="store_true", help="Run OCR for detected frames.")
+    parser.add_argument("--ocr-lang", default=EvalConfig.death_event_ocr_lang, help="Tesseract OCR language.")
+    parser.add_argument("--ocr-roi", default=None, help="Override OCR ROI as x1,y1,x2,y2.")
+    parser.add_argument("--ocr-preprocess-mode", default=EvalConfig.death_event_ocr_preprocess_mode, help="Single OCR preprocessing mode.")
+    parser.add_argument("--compare-ocr-modes", default=None, help="Comma-separated OCR preprocessing modes.")
+    parser.add_argument(
+        "--compare-ocr-rois",
+        default=None,
+        help="Semicolon-separated OCR ROIs, for example: 0.34,0.25,0.66,0.48;0.42,0.34,0.59,0.47",
+    )
+    parser.add_argument("--save-ocr-debug", action="store_true", help="Save OCR crop and processed images for detected frames.")
+    parser.add_argument("--ocr-debug-dir", default="debug/ocr", help="Directory for OCR debug images.")
+    parser.add_argument("--tesseract-cmd", default="", help="Optional path to tesseract executable.")
     parser.add_argument("--cooldown-sec", type=float, default=20.0, help="Cooldown used to simulate emitted events.")
     parser.add_argument("--save-detected-dir", default=None, help="Directory to save detected frames.")
     parser.add_argument(
@@ -349,6 +451,15 @@ def main():
 
     cfg = EvalConfig()
     cfg.death_event_template_path = args.template
+    cfg.screen_event_mode = "death_ocr" if args.ocr else "death_detect_only"
+    cfg.death_event_ocr_lang = args.ocr_lang
+    if args.ocr_roi:
+        cfg.death_event_ocr_roi = parse_roi(args.ocr_roi)
+    cfg.death_event_ocr_save_debug_images = args.save_ocr_debug
+    cfg.death_event_ocr_debug_dir = args.ocr_debug_dir
+    cfg.death_event_ocr_tesseract_cmd = args.tesseract_cmd
+    ocr_modes = parse_modes(args.compare_ocr_modes) if args.compare_ocr_modes else [args.ocr_preprocess_mode]
+    ocr_rois = parse_rois(args.compare_ocr_rois) if args.compare_ocr_rois else [cfg.death_event_ocr_roi]
     templates = load_templates(args.template)
     if not templates:
         raise SystemExit("no templates loaded.")
@@ -373,6 +484,9 @@ def main():
         save_high_score_dir=save_high_score_dir,
         high_score_threshold=args.high_score_threshold,
         max_seconds=args.max_seconds,
+        run_ocr=args.ocr,
+        ocr_modes=ocr_modes,
+        ocr_rois=ocr_rois,
     )
     print_expected_summary(
         all_rows,

@@ -5,4 +5,6 @@ audio_cache/
 config/config.py
 screen_event_eval*.csv
 screen_event_video_eval*.csv
+screen_event_*_eval*.csv
 screen_event_frames/
+debug/

@@ -134,7 +134,15 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | `DEATH_EVENT_OCR_CONFIG` | `"--psm 6"` | Tesseractのページ分割設定です。 |
 | `DEATH_EVENT_OCR_MIN_CONFIDENCE` | `0.0` | OCR結果をログ採用する最低confidenceです。 |
 | `DEATH_EVENT_OCR_SCALE` | `3.0` | OCR前にcropを拡大する倍率です。 |
+| `DEATH_EVENT_OCR_PREPROCESS_MODE` | `"default"` | OCR前処理です。`"threshold"`, `"adaptive"`, `"invert_threshold"`, `"sharpen_threshold"` も試せます。 |
 | `DEATH_EVENT_OCR_TESSERACT_CMD` | `""` | Tesseract実行ファイルのパスです。PATHが通っていない場合に指定します。 |
+| `DEATH_EVENT_OCR_SAVE_DEBUG_IMAGES` | `False` | OCR用cropと前処理後画像を保存します。通常配信では `False` にします。 |
+| `DEATH_EVENT_OCR_DEBUG_DIR` | `"debug/ocr"` | OCR debug画像の保存先です。 |
+| `DEATH_EVENT_USE_CATEGORY_REACTIONS` | `True` | OCR結果を補助情報としてカテゴリ別固定文を選びます。LLMは使いません。 |
+| `DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE` | `60.0` | 武器カテゴリ推定に使う最低OCR confidenceです。低い場合は `unknown` にします。 |
+| `DEATH_EVENT_CATEGORY_DEBUG_LOG` | `False` | カテゴリ推定の詳細ログを出します。 |
+| `DEATH_EVENT_WEAPON_KEYWORDS` | `None` | `None` の場合は標準の武器カテゴリ辞書を使います。 |
+| `DEATH_EVENT_REACTIONS_BY_CATEGORY` | `None` | `None` の場合は標準のカテゴリ別固定文を使います。 |
 | `DEATH_EVENT_REACTION_PHRASES` | `("今のはきついですね。", ...)` | 検出時にランダム再生する固定文です。 |
 
 標準設定:
@@ -192,6 +200,124 @@ DEATH_EVENT_OCR_TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 ```
 
 日本語を読む場合は Tesseract の `jpn` 言語データも必要です。環境が無い場合、死亡検出と固定文リアクションは継続し、OCRだけ `[SCREEN] OCR disabled` または `[SCREEN] OCR skip` になります。
+
+単体画像のOCR確認でも `config/config.py` の `DEATH_EVENT_OCR_TESSERACT_CMD` が使われます。実際に使われるTesseract実行ファイルを確認する場合:
+
+```bash
+python src\screen_event_detector.py E:\capture\death_03.png --ocr --debug-ocr
+```
+
+一時的に別のTesseractを使う場合は `--tesseract-cmd` で上書きできます。
+
+OCR crop画像を保存してROIを確認:
+
+```bash
+python src\screen_event_detector.py E:\capture\death_03.png --ocr --debug-ocr --save-ocr-debug
+```
+
+保存先は既定で `debug/ocr/` です。`*_crop.png` でOCR対象領域がズレていないかを先に確認し、ズレている場合は `DEATH_EVENT_OCR_ROI` を調整します。単体確認では `--ocr-roi` で一時的にROIを上書きできます。
+
+```bash
+python src\screen_event_detector.py E:\capture\death_03.png --ocr --debug-ocr --save-ocr-debug --ocr-preprocess-mode sharpen_threshold --ocr-roi 0.42,0.34,0.59,0.47
+```
+
+ROI調整の目安:
+
+- 黒カード外の背景や余計なUIが入っている場合は、ROIを狭めます。
+- `やられた!` の白文字が切れている場合は、ROIを少し広げます。
+- 武器名やプレイヤー名まで読みたい場合は、上段も含めます。
+- Phase3で使う場合も、まずは `やられた!` 検出補助として扱い、名前や武器名は信頼しすぎないでください。
+
+複数ROIを一括比較する場合は `--compare-ocr-rois` を使います。ROI自体がカンマ区切りなので、複数ROIはセミコロンで区切ります。
+
+```bash
+python tools\evaluate_screen_events.py --samples E:\capture --ocr --compare-ocr-modes sharpen_threshold --compare-ocr-rois "0.34,0.25,0.66,0.48;0.42,0.34,0.59,0.47;0.38,0.28,0.63,0.48" --save-ocr-debug --tesseract-cmd "C:\Program Files\Tesseract-OCR\tesseract.exe" --csv screen_event_ocr_roi_eval.csv
+```
+
+動画でも同じROI比較ができます。
+
+```bash
+python tools\evaluate_screen_event_video.py C:\Users\y-aka\Videos\splatoon_battle_02.mp4 --compare 0.25 --expected-times 133,183,333,373 --ocr --compare-ocr-modes sharpen_threshold --compare-ocr-rois "0.34,0.25,0.66,0.48;0.42,0.34,0.59,0.47;0.38,0.28,0.63,0.48" --save-ocr-debug --tesseract-cmd "C:\Program Files\Tesseract-OCR\tesseract.exe" --csv screen_event_video_ocr_roi_eval.csv
+```
+
+ROIが合っているのに誤読する場合は、前処理モードを比較します。
+
+```bash
+python tools\evaluate_screen_events.py --samples E:\capture --ocr --compare-ocr-modes default,threshold,adaptive,invert_threshold,sharpen_threshold --tesseract-cmd "C:\Program Files\Tesseract-OCR\tesseract.exe" --csv screen_event_ocr_modes_eval.csv
+```
+
+CSVには `ocr_preprocess_mode`, `ocr_roi`, `ocr_scale`, `ocr_text`, `ocr_confidence`, `ocr_reason` が含まれます。OCR結果が不安定、または誤読が多い場合、Phase3では `ocr_text` をそのままLLMへ渡さず、短いイベント種別だけを使うか、OCR結果を補助情報扱いにしてください。
+
+静止画でOCR列まで確認:
+
+```bash
+python tools\evaluate_screen_events.py --samples assets\screen_samples --ocr --csv screen_event_ocr_eval.csv
+```
+
+動画でOCR列まで確認:
+
+```bash
+python tools\evaluate_screen_event_video.py C:\Users\y-aka\Videos\splatoon_battle_02.mp4 --compare 0.25 --expected-times 133,183,333,373 --ocr --csv screen_event_video_ocr_eval.csv
+```
+
+CSVには `ocr_text`, `ocr_confidence`, `ocr_reason` が含まれます。OCR品質は次のように見ます。
+
+- 読めた: `ocr_reason=ok` で `ocr_text` に武器名や `やられた` が自然に含まれる
+- 一部読めた: `ocr_reason=ok` だが文字欠けや一部だけ
+- 誤読: `ocr_reason=ok` だが実画面と違う
+- 空: `ocr_reason=empty`
+- OCR未実行/skip: `ocr_reason=disabled`, `pytesseract_unavailable`, `ocr_error`, `low_confidence`
+
+### カテゴリ別固定文リアクション（Phase 3）
+
+Phase 3では、死亡イベントにLLMを使わず、OCR結果を補助情報として武器カテゴリを推定し、カテゴリ別の固定文を選びます。低遅延・低負荷で、OCR誤読をそのまま発話しにくくし、LLMリソースをTwitchコメントや「しずく」呼びかけに残すためです。
+
+OCR結果は信頼度つきの補助情報です。`DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE` 未満、OCR失敗、キーワード不一致の場合は `unknown` に落とし、汎用固定文で反応します。武器名やプレイヤー名を断定して発話しません。
+
+カテゴリ辞書や固定文を調整したい場合は、`config/config.py` に `DEATH_EVENT_WEAPON_KEYWORDS` または `DEATH_EVENT_REACTIONS_BY_CATEGORY` を追加します。未指定または `None` の場合は `src/screen_event_reactions.py` の標準辞書を使います。
+
+評価CSVには以下の列が追加されます。
+
+- `normalized_ocr_text`
+- `weapon_category`
+- `emotion_category`
+- `selected_reaction`
+- `reaction_source`
+- `matched_keywords`
+- `category_reason`
+
+`unknown` の低頻度LLM利用は将来拡張です。`DEATH_EVENT_UNKNOWN_USE_LLM` はデフォルト `False` で、Phase 3ではLLMを呼びません。
+
+### 入力取得の設計メモ
+
+画面イベント検出は、将来OBS入力へ差し替えやすいように責務を分けています。
+
+- `FrameSource`: フレーム取得だけを担当します。
+- `MSSFrameSource`: 現在のディスプレイキャプチャ実装です。
+- `DeathDetector`: 渡された画像フレームから死亡検出とOCRを行います。入力元がmssかOBSかは知りません。
+- `ScreenEventDetector`: intervalごとに `FrameSource` からフレームを読み、`DeathDetector` に渡し、検出時にevent queueへ投入します。
+
+静止画検証、動画検証、mss live capture は同じ `detect_death_event()` と `ocr_death_text()` を使います。
+
+将来の `FrameSource` 候補:
+
+- `MSSFrameSource`: 現在のディスプレイキャプチャ
+- `VideoFileFrameSource`: 検証動画用
+- `OBSVirtualCameraFrameSource`: Phase4候補
+- `OBSWindowOrProjectorFrameSource`: OBSプレビュー/プロジェクターをmssで読む代替候補
+- `OBSSourceFrameSource`: OBS WebSocketやOBS拡張による将来候補
+
+### Phase4 OBS入力方針
+
+現在はディスプレイキャプチャ前提のため、ゲーム画面を表示しておく必要があります。将来的な理想はOBS映像ソースから直接フレームを取得し、画面表示に依存せず検出できることです。
+
+Phase4の候補:
+
+1. OBS Virtual CameraをOpenCV `VideoCapture` で読む
+2. OBSプレビュー/プロジェクターを `mss` で読む
+3. OBS WebSocketまたはOBS拡張でソースフレームを取得する
+
+最初の候補は OBS Virtual Camera が現実的です。理由は、死亡検出/OCR/queue投入の処理を変えず、`FrameSource` だけ差し替えればよいためです。Phase4ではOBS連携を追加しますが、Phase2では実装しません。
 
 ### 動画検証
 

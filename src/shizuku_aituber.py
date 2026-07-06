@@ -35,6 +35,14 @@ except BaseException as e:
 else:
     SCREEN_IMPORT_ERROR = None
 
+try:
+    from screen_event_reactions import select_death_reaction
+except BaseException as e:
+    select_death_reaction = None
+    SCREEN_REACTION_IMPORT_ERROR = e
+else:
+    SCREEN_REACTION_IMPORT_ERROR = None
+
 
 # =========================================
 # config/config.py を読み込む
@@ -109,7 +117,19 @@ DEATH_EVENT_OCR_LANG = config_value("DEATH_EVENT_OCR_LANG", "jpn+eng")
 DEATH_EVENT_OCR_CONFIG = config_value("DEATH_EVENT_OCR_CONFIG", "--psm 6")
 DEATH_EVENT_OCR_MIN_CONFIDENCE = config_value("DEATH_EVENT_OCR_MIN_CONFIDENCE", 0.0)
 DEATH_EVENT_OCR_SCALE = config_value("DEATH_EVENT_OCR_SCALE", 3.0)
+DEATH_EVENT_OCR_PREPROCESS_MODE = config_value("DEATH_EVENT_OCR_PREPROCESS_MODE", "default")
 DEATH_EVENT_OCR_TESSERACT_CMD = config_value("DEATH_EVENT_OCR_TESSERACT_CMD", "")
+DEATH_EVENT_OCR_DEBUG_LOG = config_value("DEATH_EVENT_OCR_DEBUG_LOG", False)
+DEATH_EVENT_OCR_SAVE_DEBUG_IMAGES = config_value("DEATH_EVENT_OCR_SAVE_DEBUG_IMAGES", False)
+DEATH_EVENT_OCR_DEBUG_DIR = config_value("DEATH_EVENT_OCR_DEBUG_DIR", "debug/ocr")
+DEATH_EVENT_USE_CATEGORY_REACTIONS = config_value("DEATH_EVENT_USE_CATEGORY_REACTIONS", True)
+DEATH_EVENT_CATEGORY_DEBUG_LOG = config_value("DEATH_EVENT_CATEGORY_DEBUG_LOG", False)
+DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE = config_value("DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE", 60.0)
+DEATH_EVENT_WEAPON_KEYWORDS = config_value("DEATH_EVENT_WEAPON_KEYWORDS", None)
+DEATH_EVENT_REACTIONS_BY_CATEGORY = config_value("DEATH_EVENT_REACTIONS_BY_CATEGORY", None)
+DEATH_EVENT_UNKNOWN_USE_LLM = config_value("DEATH_EVENT_UNKNOWN_USE_LLM", False)
+DEATH_EVENT_UNKNOWN_LLM_RATE = config_value("DEATH_EVENT_UNKNOWN_LLM_RATE", 0.2)
+DEATH_EVENT_UNKNOWN_LLM_COOLDOWN_SEC = config_value("DEATH_EVENT_UNKNOWN_LLM_COOLDOWN_SEC", 60.0)
 DEATH_EVENT_REACTION_PHRASES = config_value(
     "DEATH_EVENT_REACTION_PHRASES",
     ("今のはきついですね。", "これは悔しいですね。", "相手、やってますね。", "今の詰め方は強いですね。", "それは声出ますね。"),
@@ -194,7 +214,19 @@ class Config:
     death_event_ocr_config: str = DEATH_EVENT_OCR_CONFIG
     death_event_ocr_min_confidence: float = DEATH_EVENT_OCR_MIN_CONFIDENCE
     death_event_ocr_scale: float = DEATH_EVENT_OCR_SCALE
+    death_event_ocr_preprocess_mode: str = DEATH_EVENT_OCR_PREPROCESS_MODE
     death_event_ocr_tesseract_cmd: str = DEATH_EVENT_OCR_TESSERACT_CMD
+    death_event_ocr_debug_log: bool = DEATH_EVENT_OCR_DEBUG_LOG
+    death_event_ocr_save_debug_images: bool = DEATH_EVENT_OCR_SAVE_DEBUG_IMAGES
+    death_event_ocr_debug_dir: str = DEATH_EVENT_OCR_DEBUG_DIR
+    death_event_use_category_reactions: bool = DEATH_EVENT_USE_CATEGORY_REACTIONS
+    death_event_category_debug_log: bool = DEATH_EVENT_CATEGORY_DEBUG_LOG
+    death_event_ocr_category_min_confidence: float = DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE
+    death_event_weapon_keywords: Optional[dict] = DEATH_EVENT_WEAPON_KEYWORDS
+    death_event_reactions_by_category: Optional[dict] = DEATH_EVENT_REACTIONS_BY_CATEGORY
+    death_event_unknown_use_llm: bool = DEATH_EVENT_UNKNOWN_USE_LLM
+    death_event_unknown_llm_rate: float = DEATH_EVENT_UNKNOWN_LLM_RATE
+    death_event_unknown_llm_cooldown_sec: float = DEATH_EVENT_UNKNOWN_LLM_COOLDOWN_SEC
     death_event_reaction_phrases: tuple = DEATH_EVENT_REACTION_PHRASES
 
 
@@ -796,11 +828,6 @@ def main():
             print("[SCREEN] skip reason=cooldown", flush=True)
             return False
 
-        phrases = tuple(p for p in CFG.death_event_reaction_phrases if p)
-        if not phrases:
-            print("[SCREEN] skip reason=no_reaction_phrases", flush=True)
-            return False
-
         event_type = getattr(event, "event_type", "unknown")
         confidence = getattr(event, "confidence", 0.0)
         details = getattr(event, "details", {}) or {}
@@ -811,7 +838,31 @@ def main():
                 f"ocr_confidence={float(details.get('ocr_confidence', 0.0)):.1f}",
                 flush=True,
             )
-        phrase = random.choice(phrases)
+
+        reaction = {}
+        if CFG.death_event_use_category_reactions and select_death_reaction is not None:
+            reaction = select_death_reaction(details, CFG)
+            if CFG.death_event_category_debug_log or CFG.screen_event_debug_log:
+                print(
+                    f"[SCREEN] normalized_ocr_text={reaction.get('normalized_ocr_text', '')} "
+                    f"weapon_category={reaction.get('weapon_category', 'unknown')} "
+                    f"emotion_category={reaction.get('emotion_category', 'generic')} "
+                    f"reaction_source={reaction.get('reaction_source', '')} "
+                    f"matched_keywords={','.join(reaction.get('matched_keywords', ()))} "
+                    f"category_reason={reaction.get('category_reason', '')}",
+                    flush=True,
+                )
+        elif CFG.death_event_use_category_reactions and select_death_reaction is None:
+            print(f"[SCREEN] category reactions disabled reason={SCREEN_REACTION_IMPORT_ERROR}", flush=True)
+
+        phrase = str(reaction.get("phrase", "") or "").strip()
+        if not phrase:
+            phrases = tuple(p for p in CFG.death_event_reaction_phrases if p)
+            if not phrases:
+                print("[SCREEN] skip reason=no_reaction_phrases", flush=True)
+                return False
+            phrase = random.choice(phrases)
+
         speak_fixed_phrase(phrase, "screen_event")
         state.last_screen_event_time = time.monotonic()
         state.last_user_interaction_time = state.last_screen_event_time

@@ -2,6 +2,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -59,6 +60,9 @@ class OcrResult:
     text: str
     confidence: float
     reason: str = ""
+    preprocess_mode: str = ""
+    roi: tuple = ()
+    scale: float = 0.0
 
 
 @dataclass
@@ -322,6 +326,64 @@ def capture_crop(sct, monitor: dict, cfg) -> np.ndarray:
     return image
 
 
+class FrameSource:
+    def start(self) -> None:
+        pass
+
+    def read(self) -> np.ndarray:
+        raise NotImplementedError
+
+    def stop(self) -> None:
+        pass
+
+
+class MSSFrameSource(FrameSource):
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.sct = None
+        self.monitor = None
+
+    def start(self) -> None:
+        if mss is None:
+            raise RuntimeError(f"mss_unavailable:{MSS_IMPORT_ERROR}")
+        monitor_index = int(getattr(self.cfg, "screen_capture_monitor_index", 1))
+        self.sct = mss.mss()
+        monitors = self.sct.monitors
+        if monitor_index < 1 or monitor_index >= len(monitors):
+            raise RuntimeError(f"monitor_not_found index={monitor_index}")
+        self.monitor = monitors[monitor_index]
+        target = _build_capture_target(self.monitor, self.cfg)
+        print(f"[SCREEN] monitor index={monitor_index}", flush=True)
+        print(
+            f"[SCREEN] capture region left={target['left']} top={target['top']} "
+            f"width={target['width']} height={target['height']}",
+            flush=True,
+        )
+
+    def read(self) -> np.ndarray:
+        if self.sct is None or self.monitor is None:
+            raise RuntimeError("frame_source_not_started")
+        return capture_crop(self.sct, self.monitor, self.cfg)
+
+    def stop(self) -> None:
+        if self.sct is not None:
+            self.sct.close()
+        self.sct = None
+        self.monitor = None
+
+
+class DeathDetector:
+    def __init__(self, cfg, templates):
+        self.cfg = cfg
+        self.templates = templates
+
+    def detect(self, image: np.ndarray) -> DeathDetectionResult:
+        return detect_death_event(image, self.cfg, self.templates)
+
+    def ocr(self, image: np.ndarray) -> OcrResult:
+        return ocr_death_text(image, self.cfg)
+
+
 def format_detection_metrics(result: DeathDetectionResult) -> str:
     return (
         f"final_score={result.final_score:.2f} template_score={result.template_score:.2f} "
@@ -341,29 +403,108 @@ def configure_tesseract(cfg) -> None:
     command = str(getattr(cfg, "death_event_ocr_tesseract_cmd", "") or "").strip()
     if command:
         pytesseract.pytesseract.tesseract_cmd = command
+    if getattr(cfg, "death_event_ocr_debug_log", False):
+        active_command = getattr(pytesseract.pytesseract, "tesseract_cmd", "tesseract")
+        source = "config" if command else "PATH"
+        print(f"[SCREEN] OCR tesseract_cmd={active_command} source={source}", flush=True)
+
+
+def _ocr_preprocess_mode(cfg) -> str:
+    return str(getattr(cfg, "death_event_ocr_preprocess_mode", "default") or "default")
 
 
 def preprocess_ocr_crop(image: np.ndarray, cfg) -> np.ndarray:
     scale = max(1.0, float(getattr(cfg, "death_event_ocr_scale", 3.0)))
+    mode = _ocr_preprocess_mode(cfg)
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     if scale != 1.0:
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, binary = cv2.threshold(gray, 170, 255, cv2.THRESH_BINARY)
-    return cv2.copyMakeBorder(binary, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=0)
+
+    if mode == "default":
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, processed = cv2.threshold(gray, 170, 255, cv2.THRESH_BINARY)
+    elif mode == "threshold":
+        _, processed = cv2.threshold(gray, 190, 255, cv2.THRESH_BINARY)
+    elif mode == "adaptive":
+        denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+        processed = cv2.adaptiveThreshold(
+            denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
+        )
+    elif mode == "invert_threshold":
+        _, processed = cv2.threshold(gray, 190, 255, cv2.THRESH_BINARY_INV)
+    elif mode == "sharpen_threshold":
+        blurred = cv2.GaussianBlur(gray, (0, 0), 1.0)
+        sharpened = cv2.addWeighted(gray, 1.7, blurred, -0.7, 0)
+        _, processed = cv2.threshold(sharpened, 185, 255, cv2.THRESH_BINARY)
+        kernel = np.ones((2, 2), np.uint8)
+        processed = cv2.morphologyEx(processed, cv2.MORPH_CLOSE, kernel)
+    else:
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, processed = cv2.threshold(gray, 170, 255, cv2.THRESH_BINARY)
+
+    return cv2.copyMakeBorder(processed, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=0)
+
+
+def _safe_name(value: str) -> str:
+    return "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in value)
+
+
+def parse_roi(value: str) -> Tuple[float, float, float, float]:
+    parts = [part.strip() for part in str(value).split(",")]
+    if len(parts) != 4:
+        raise ValueError(f"ROI must have 4 comma-separated values: {value}")
+    x1, y1, x2, y2 = (float(part) for part in parts)
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError(f"ROI must be x1,y1,x2,y2 with x2>x1 and y2>y1: {value}")
+    return x1, y1, x2, y2
+
+
+def format_roi(roi) -> str:
+    return ",".join(f"{float(value):.4f}".rstrip("0").rstrip(".") for value in roi)
+
+
+def save_ocr_debug_images(
+    source_name: str,
+    crop: np.ndarray,
+    processed: np.ndarray,
+    cfg,
+    output_dir: Optional[str] = None,
+) -> None:
+    if cv2 is None:
+        return
+    base_dir = Path(output_dir or getattr(cfg, "death_event_ocr_debug_dir", "debug/ocr"))
+    if not base_dir.is_absolute():
+        base_dir = _project_root() / base_dir
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    roi = getattr(cfg, "death_event_ocr_roi", ())
+    scale = max(1.0, float(getattr(cfg, "death_event_ocr_scale", 3.0)))
+    mode = _ocr_preprocess_mode(cfg)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    roi_text = "_".join(str(v).replace(".", "p") for v in roi)
+    stem = _safe_name(Path(source_name).stem if source_name else "screen")
+    prefix = f"{stem}_roi-{roi_text}_scale-{str(scale).replace('.', 'p')}_mode-{mode}_{timestamp}"
+    cv2.imwrite(str(base_dir / f"{prefix}_crop.png"), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(str(base_dir / f"{prefix}_processed.png"), processed)
 
 
 def ocr_death_text(image: np.ndarray, cfg) -> OcrResult:
-    if not _ocr_enabled(cfg):
-        return OcrResult("", 0.0, "disabled")
-    if cv2 is None:
-        return OcrResult("", 0.0, "cv2_unavailable")
-    if pytesseract is None:
-        return OcrResult("", 0.0, f"pytesseract_unavailable:{PYTESSERACT_IMPORT_ERROR}")
-
+    mode = _ocr_preprocess_mode(cfg)
+    scale = max(1.0, float(getattr(cfg, "death_event_ocr_scale", 3.0)))
     ocr_roi = getattr(cfg, "death_event_ocr_roi", getattr(cfg, "death_event_roi", (0.32, 0.21, 0.67, 0.54)))
+    if not _ocr_enabled(cfg):
+        return OcrResult("", 0.0, "disabled", mode, ocr_roi, scale)
+    if cv2 is None:
+        return OcrResult("", 0.0, "cv2_unavailable", mode, ocr_roi, scale)
+    if pytesseract is None:
+        return OcrResult("", 0.0, f"pytesseract_unavailable:{PYTESSERACT_IMPORT_ERROR}", mode, ocr_roi, scale)
+
+    configure_tesseract(cfg)
     crop = crop_roi(image, ocr_roi)
     processed = preprocess_ocr_crop(crop, cfg)
+    if getattr(cfg, "death_event_ocr_save_debug_images", False):
+        source_name = str(getattr(cfg, "death_event_ocr_debug_source_name", "screen"))
+        save_ocr_debug_images(source_name, crop, processed, cfg)
     lang = str(getattr(cfg, "death_event_ocr_lang", "jpn+eng") or "jpn+eng")
     tesseract_config = str(getattr(cfg, "death_event_ocr_config", "--psm 6") or "--psm 6")
     min_confidence = float(getattr(cfg, "death_event_ocr_min_confidence", 0.0))
@@ -376,7 +517,7 @@ def ocr_death_text(image: np.ndarray, cfg) -> OcrResult:
             output_type=pytesseract.Output.DICT,
         )
     except Exception as e:
-        return OcrResult("", 0.0, f"ocr_error:{e}")
+        return OcrResult("", 0.0, f"ocr_error:{e}", mode, ocr_roi, scale)
 
     parts = []
     confidences = []
@@ -395,10 +536,10 @@ def ocr_death_text(image: np.ndarray, cfg) -> OcrResult:
     text = normalize_ocr_text("".join(parts))
     confidence = float(sum(confidences) / len(confidences)) if confidences else 0.0
     if not text:
-        return OcrResult("", confidence, "empty")
+        return OcrResult("", confidence, "empty", mode, ocr_roi, scale)
     if confidence < min_confidence:
-        return OcrResult(text, confidence, "low_confidence")
-    return OcrResult(text, confidence, "ok")
+        return OcrResult(text, confidence, "low_confidence", mode, ocr_roi, scale)
+    return OcrResult(text, confidence, "ok", mode, ocr_roi, scale)
 
 
 class ScreenEventDetector:
@@ -408,6 +549,8 @@ class ScreenEventDetector:
         self.running = False
         self.thread = None
         self.templates = []
+        self.detector = None
+        self.frame_source = None
         self.last_emit_time = 0.0
         self.last_low_score_log_time = 0.0
 
@@ -427,6 +570,8 @@ class ScreenEventDetector:
             print("[SCREEN] disabled reason=template_unavailable", flush=True)
             return
         print(f"[SCREEN] templates loaded count={len(self.templates)}", flush=True)
+        self.detector = DeathDetector(self.cfg, self.templates)
+        self.frame_source = MSSFrameSource(self.cfg)
         if _ocr_enabled(self.cfg):
             configure_tesseract(self.cfg)
             if pytesseract is None:
@@ -442,6 +587,8 @@ class ScreenEventDetector:
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
+        if self.frame_source is not None:
+            self.frame_source.stop()
 
     def _should_log_skip(self, now: float) -> bool:
         if getattr(self.cfg, "screen_event_debug_log", False):
@@ -455,108 +602,140 @@ class ScreenEventDetector:
     def _run(self):
         interval = max(0.2, float(getattr(self.cfg, "screen_capture_interval_sec", 0.25)))
         cooldown = max(0.0, float(getattr(self.cfg, "death_event_cooldown_sec", 20.0)))
-        monitor_index = int(getattr(self.cfg, "screen_capture_monitor_index", 1))
         debug = bool(getattr(self.cfg, "screen_event_debug_log", False))
         try:
-            with mss.mss() as sct:
-                monitors = sct.monitors
-                if monitor_index < 1 or monitor_index >= len(monitors):
-                    print(f"[SCREEN] disabled reason=monitor_not_found index={monitor_index}", flush=True)
-                    return
-                monitor = monitors[monitor_index]
-                target = _build_capture_target(monitor, self.cfg)
-                print(f"[SCREEN] monitor index={monitor_index}", flush=True)
-                print(
-                    f"[SCREEN] capture region left={target['left']} top={target['top']} "
-                    f"width={target['width']} height={target['height']}",
-                    flush=True,
-                )
-                while self.running:
-                    start = time.monotonic()
-                    try:
-                        image = capture_crop(sct, monitor, self.cfg)
-                        result = detect_death_event(image, self.cfg, self.templates)
-                        now = time.monotonic()
-                        elapsed = now - start
+            if self.frame_source is None:
+                self.frame_source = MSSFrameSource(self.cfg)
+            if self.detector is None:
+                self.detector = DeathDetector(self.cfg, self.templates)
+            self.frame_source.start()
+            while self.running:
+                start = time.monotonic()
+                try:
+                    image = self.frame_source.read()
+                    result = self.detector.detect(image)
+                    now = time.monotonic()
+                    elapsed = now - start
 
-                        if debug:
-                            print(f"[SCREEN] capture elapsed={elapsed:.3f}s interval={interval:.3f}s", flush=True)
-                        if elapsed > interval:
-                            print(
-                                f"[SCREEN] warning capture elapsed > interval elapsed={elapsed:.3f}s interval={interval:.3f}s",
-                                flush=True,
-                            )
+                    if debug:
+                        print(f"[SCREEN] capture elapsed={elapsed:.3f}s interval={interval:.3f}s", flush=True)
+                    if elapsed > interval:
+                        print(
+                            f"[SCREEN] warning capture elapsed > interval elapsed={elapsed:.3f}s interval={interval:.3f}s",
+                            flush=True,
+                        )
 
-                        if result.detected:
-                            if now - self.last_emit_time < cooldown:
-                                print("[SCREEN] skip reason=cooldown", flush=True)
-                            else:
-                                ocr_result = ocr_death_text(image, self.cfg)
-                                print(f"[SCREEN] detected type=death {format_detection_metrics(result)}", flush=True)
-                                if _ocr_enabled(self.cfg):
-                                    if ocr_result.reason == "ok":
-                                        print(
-                                            f"[SCREEN] OCR text={ocr_result.text} confidence={ocr_result.confidence:.1f}",
-                                            flush=True,
-                                        )
-                                    else:
-                                        print(
-                                            f"[SCREEN] OCR skip reason={ocr_result.reason} "
-                                            f"text={ocr_result.text} confidence={ocr_result.confidence:.1f}",
-                                            flush=True,
-                                        )
-                                self.output_queue.put(ScreenEvent(
-                                    event_type="death",
-                                    confidence=result.final_score,
-                                    created_at=now,
-                                    details={
-                                        "final_score": result.final_score,
-                                        "template_score": result.template_score,
-                                        "shape_score": result.shape_score,
-                                        "dark_ratio": result.dark_ratio,
-                                        "white_ratio": result.white_ratio,
-                                        "cols_with_white": result.cols_with_white,
-                                        "rows_with_white": result.rows_with_white,
-                                        "ocr_text": ocr_result.text,
-                                        "ocr_confidence": ocr_result.confidence,
-                                        "ocr_reason": ocr_result.reason,
-                                    },
-                                ))
-                                self.last_emit_time = now
-                        elif self._should_log_skip(now):
-                            print(f"[SCREEN] skip reason={result.reason} {format_detection_metrics(result)}", flush=True)
-                    except Exception as e:
-                        print(f"[SCREEN] error: {e}", flush=True)
-                        elapsed = time.monotonic() - start
-                    time.sleep(max(0.0, interval - elapsed))
+                    if result.detected:
+                        if now - self.last_emit_time < cooldown:
+                            print("[SCREEN] skip reason=cooldown", flush=True)
+                        else:
+                            ocr_result = self.detector.ocr(image)
+                            print(f"[SCREEN] detected type=death {format_detection_metrics(result)}", flush=True)
+                            if _ocr_enabled(self.cfg):
+                                if ocr_result.reason == "ok":
+                                    print(
+                                        f"[SCREEN] OCR text={ocr_result.text} confidence={ocr_result.confidence:.1f}",
+                                        flush=True,
+                                    )
+                                else:
+                                    print(
+                                        f"[SCREEN] OCR skip reason={ocr_result.reason} "
+                                        f"text={ocr_result.text} confidence={ocr_result.confidence:.1f}",
+                                        flush=True,
+                                    )
+                            self.output_queue.put(ScreenEvent(
+                                event_type="death",
+                                confidence=result.final_score,
+                                created_at=now,
+                                details={
+                                    "final_score": result.final_score,
+                                    "template_score": result.template_score,
+                                    "shape_score": result.shape_score,
+                                    "dark_ratio": result.dark_ratio,
+                                    "white_ratio": result.white_ratio,
+                                    "cols_with_white": result.cols_with_white,
+                                    "rows_with_white": result.rows_with_white,
+                                    "ocr_text": ocr_result.text,
+                                    "ocr_confidence": ocr_result.confidence,
+                                    "ocr_reason": ocr_result.reason,
+                                    "ocr_preprocess_mode": ocr_result.preprocess_mode,
+                                    "ocr_roi": ocr_result.roi,
+                                    "ocr_scale": ocr_result.scale,
+                                },
+                            ))
+                            self.last_emit_time = now
+                    elif self._should_log_skip(now):
+                        print(f"[SCREEN] skip reason={result.reason} {format_detection_metrics(result)}", flush=True)
+                except Exception as e:
+                    print(f"[SCREEN] error: {e}", flush=True)
+                    elapsed = time.monotonic() - start
+                time.sleep(max(0.0, interval - elapsed))
+        except Exception as e:
+            print(f"[SCREEN] disabled reason={e}", flush=True)
         finally:
+            if self.frame_source is not None:
+                self.frame_source.stop()
             self.running = False
 
 
 if __name__ == "__main__":
     import argparse
+    import importlib.util
+
+    def _load_cli_config():
+        config_path = _project_root() / "config" / "config.py"
+        if not config_path.exists():
+            return None
+        spec = importlib.util.spec_from_file_location("screen_event_cli_config", config_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _cfg_value(module, name, default):
+        if module is None:
+            return default
+        return getattr(module, name, default)
 
     parser = argparse.ArgumentParser(description="Test screen death detection against an image file.")
     parser.add_argument("image")
     parser.add_argument("--template", default="assets/templates/splatoon_death_yarareta.png")
     parser.add_argument("--ocr", action="store_true", help="Run OCR when death is detected.")
-    parser.add_argument("--ocr-lang", default="jpn+eng")
+    parser.add_argument("--ocr-lang", default=None)
+    parser.add_argument("--ocr-roi", default=None, help="Override OCR ROI as x1,y1,x2,y2.")
+    parser.add_argument("--ocr-preprocess-mode", default=None)
     parser.add_argument("--tesseract-cmd", default="")
+    parser.add_argument("--debug-ocr", action="store_true", help="Print OCR backend settings before running OCR.")
+    parser.add_argument("--save-ocr-debug", action="store_true", help="Save OCR crop and processed images.")
+    parser.add_argument("--ocr-debug-dir", default=None)
     args = parser.parse_args()
+    cli_config = _load_cli_config()
 
     class _Cfg:
-        death_event_roi = (0.32, 0.21, 0.67, 0.54)
-        death_event_text_roi = (0.42, 0.33, 0.59, 0.46)
+        death_event_roi = _cfg_value(cli_config, "DEATH_EVENT_ROI", (0.32, 0.21, 0.67, 0.54))
+        death_event_text_roi = _cfg_value(cli_config, "DEATH_EVENT_TEXT_ROI", (0.42, 0.33, 0.59, 0.46))
         death_event_template_path = args.template
-        screen_capture_width = 640
-        screen_capture_height = 360
+        screen_capture_width = _cfg_value(cli_config, "SCREEN_CAPTURE_WIDTH", 640)
+        screen_capture_height = _cfg_value(cli_config, "SCREEN_CAPTURE_HEIGHT", 360)
+        death_event_min_template_score = _cfg_value(cli_config, "DEATH_EVENT_MIN_TEMPLATE_SCORE", 0.55)
+        death_event_shape_min_template_score = _cfg_value(cli_config, "DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE", 0.40)
+        death_event_white_ratio_min = _cfg_value(cli_config, "DEATH_EVENT_WHITE_RATIO_MIN", 0.015)
+        death_event_white_ratio_max = _cfg_value(cli_config, "DEATH_EVENT_WHITE_RATIO_MAX", 0.18)
+        death_event_shape_white_ratio_min = _cfg_value(cli_config, "DEATH_EVENT_SHAPE_WHITE_RATIO_MIN", 0.04)
+        death_event_shape_white_ratio_max = _cfg_value(cli_config, "DEATH_EVENT_SHAPE_WHITE_RATIO_MAX", 0.14)
         screen_event_mode = "death_ocr" if args.ocr else "death_detect_only"
-        death_event_ocr_roi = (0.34, 0.25, 0.66, 0.48)
-        death_event_ocr_lang = args.ocr_lang
-        death_event_ocr_config = "--psm 6"
-        death_event_ocr_min_confidence = 0.0
-        death_event_ocr_scale = 3.0
-        death_event_ocr_tesseract_cmd = args.tesseract_cmd
+        death_event_ocr_roi = parse_roi(args.ocr_roi) if args.ocr_roi else _cfg_value(cli_config, "DEATH_EVENT_OCR_ROI", (0.34, 0.25, 0.66, 0.48))
+        death_event_ocr_lang = args.ocr_lang or _cfg_value(cli_config, "DEATH_EVENT_OCR_LANG", "jpn+eng")
+        death_event_ocr_config = _cfg_value(cli_config, "DEATH_EVENT_OCR_CONFIG", "--psm 6")
+        death_event_ocr_min_confidence = _cfg_value(cli_config, "DEATH_EVENT_OCR_MIN_CONFIDENCE", 0.0)
+        death_event_ocr_scale = _cfg_value(cli_config, "DEATH_EVENT_OCR_SCALE", 3.0)
+        death_event_ocr_preprocess_mode = args.ocr_preprocess_mode or _cfg_value(cli_config, "DEATH_EVENT_OCR_PREPROCESS_MODE", "default")
+        death_event_ocr_tesseract_cmd = args.tesseract_cmd or _cfg_value(cli_config, "DEATH_EVENT_OCR_TESSERACT_CMD", "")
+        death_event_ocr_debug_log = args.debug_ocr or _cfg_value(cli_config, "DEATH_EVENT_OCR_DEBUG_LOG", False)
+        death_event_ocr_save_debug_images = args.save_ocr_debug
+        death_event_ocr_debug_dir = args.ocr_debug_dir or _cfg_value(cli_config, "DEATH_EVENT_OCR_DEBUG_DIR", "debug/ocr")
+        death_event_ocr_debug_source_name = args.image
 
     if cv2 is None:
         raise SystemExit(f"cv2 is unavailable: {CV2_IMPORT_ERROR}")
@@ -568,5 +747,4 @@ if __name__ == "__main__":
     result = detect_death_event(rgb, _Cfg, tpl)
     print(result)
     if args.ocr and result.detected:
-        configure_tesseract(_Cfg)
         print(ocr_death_text(rgb, _Cfg))
