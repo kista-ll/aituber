@@ -70,12 +70,31 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 
 しずくが配信者の独り言すべてに反応しないよう、AI発話にクールダウンと反応率制御を入れています。視聴者コメントは有効時に優先処理され、「しずく」と呼ばれた発話は配信者音声でも優先して返答します。
 
+配信者の短い感情発話は、LLMではなく固定文で短く返せます。Twitchコメントと「しずく」呼びかけはLLMを優先し、`きつい`、`惜しい`、`ナイス`、`ふざけんな` などの感情リアクションは固定文中心にすることで、謝罪誤爆や長文返答を減らします。`あー`、`うーん` のような短い独り言は基本的にスキップします。
+
 | 設定名 | 初期値 | 役割・変更例 |
 | --- | --- | --- |
 | `AI_SPEECH_COOLDOWN_SEC` | `8.0` | AIが連続発話しすぎないための最短間隔です。 |
 | `STREAMER_RESPONSE_PROBABILITY` | `0.25` | 配信者音声へ反応する確率です。独り言への反応を減らします。 |
 | `SHIZUKU_CALL_KEYWORDS` | `("しずく", "シズク", "雫")` | 呼びかけとして扱うキーワードです。 |
 | `STREAMER_FORCE_REPLY_KEYWORDS` | `("しずく", "どう思う", "見て", "聞いて")` | 反応率制御を超えて返答するキーワードです。 |
+| `STREAMER_FIXED_RESPONSE_ENABLED` | `True` | 配信者の感情発話に固定文で返します。 |
+| `STREAMER_LLM_ON_ADDRESS_ONLY` | `True` | 配信者音声では、呼びかけ以外のLLM利用を抑えます。 |
+| `STREAMER_FIXED_RESPONSE_RATE` | `0.5` | 固定文候補にする発話へ実際に返す確率です。 |
+| `STREAMER_SHORT_NOISE_SKIP` | `True` | 短い独り言や相づちはスキップします。 |
+| `STREAMER_FIXED_RESPONSE_COOLDOWN_SEC` | `15.0` | 配信者固定文応答の最短間隔です。 |
+| `STREAMER_UTTERANCE_KEYWORDS` | `None` | `None` の場合は標準分類キーワードを使います。 |
+| `STREAMER_FIXED_RESPONSE_PHRASES` | `None` | `None` の場合は標準固定文を使います。 |
+
+配信者発話の分類:
+
+- `addressed`: 「しずく」などの呼びかけ。LLMで返します。
+- `short_noise`: 「あー」「うーん」など。基本スキップします。
+- `frustration`: 「きつい」「無理」「やばい」など。固定文で返します。
+- `close_call`: 「惜しい」「あと少し」など。固定文で返します。
+- `success`: 「ナイス」「勝った」「いいね」など。固定文で返します。
+- `angry`: 「ふざけんな」「それはない」など。謝罪せず短い共感・ツッコミで返します。
+- `generic`: その他。低頻度で固定文またはスキップします。
 
 ## Twitchコメント優先
 
@@ -115,12 +134,17 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | --- | --- | --- |
 | `SCREEN_EVENT_ENABLED` | `False` | 画面イベント検出のON/OFFです。まず動作確認時だけ `True` にします。 |
 | `SCREEN_EVENT_MODE` | `"death_detect_only"` | `"death_detect_only"` または `"death_ocr"`。OCRは死亡検出後だけ実行します。 |
+| `SCREEN_FRAME_SOURCE` | `"mss"` | `"mss"` または `"obs_virtual_camera"`。画面イベント検出の入力元です。 |
 | `SCREEN_CAPTURE_INTERVAL_SEC` | `0.25` | 画面を確認する間隔です。短時間の死亡表示を拾うため、Phase 1では `0.25` を標準にします。 |
 | `SCREEN_CAPTURE_MONITOR_INDEX` | `1` | `mss` のモニター番号です。画面が違う場合に変更します。 |
 | `SCREEN_CAPTURE_WIDTH` / `SCREEN_CAPTURE_HEIGHT` | `640` / `360` | 判定用に縮小するサイズです。 |
 | `SCREEN_CAPTURE_REGION` | `None` | 指定モニター内の一部だけを見る場合に `(left, top, width, height)` で指定します。 |
 | `SCREEN_EVENT_DEBUG_LOG` | `False` | 検出スコアや処理時間の詳細ログを出します。 |
 | `SCREEN_EVENT_LOG_EVERY_SEC` | `10.0` | debug無効時の低スコアログ間隔です。 |
+| `OBS_VIRTUAL_CAMERA_INDEX` | `0` | OBS Virtual Cameraを読むOpenCVカメラ番号です。 |
+| `OBS_VIRTUAL_CAMERA_WIDTH` / `HEIGHT` | `1920` / `1080` | OBS Virtual Cameraへ要求する解像度です。 |
+| `OBS_VIRTUAL_CAMERA_FPS` | `30` | OBS Virtual Cameraへ要求するFPSです。 |
+| `OBS_VIRTUAL_CAMERA_WARMUP_FRAMES` | `5` | 起動直後に読み捨てるフレーム数です。 |
 | `DEATH_EVENT_COOLDOWN_SEC` | `20.0` | 死亡イベント反応の最短間隔です。検出頻度とは別です。 |
 | `DEATH_EVENT_MIN_TEMPLATE_SCORE` | `0.55` | 主判定のテンプレート一致しきい値です。 |
 | `DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE` | `0.40` | 補助判定でも必要な最低テンプレート一致度です。 |
@@ -138,11 +162,12 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | `DEATH_EVENT_OCR_TESSERACT_CMD` | `""` | Tesseract実行ファイルのパスです。PATHが通っていない場合に指定します。 |
 | `DEATH_EVENT_OCR_SAVE_DEBUG_IMAGES` | `False` | OCR用cropと前処理後画像を保存します。通常配信では `False` にします。 |
 | `DEATH_EVENT_OCR_DEBUG_DIR` | `"debug/ocr"` | OCR debug画像の保存先です。 |
-| `DEATH_EVENT_USE_CATEGORY_REACTIONS` | `True` | OCR結果を補助情報としてカテゴリ別固定文を選びます。LLMは使いません。 |
+| `DEATH_EVENT_USE_CONTEXT_REACTIONS` | `True` | OCRに依存しない死亡状況別固定文を選びます。標準のPhase3動作です。 |
+| `DEATH_EVENT_USE_WEAPON_CATEGORY_REACTIONS` | `False` | OCR結果から武器カテゴリ分岐を試す実験機能です。通常はOFFにします。 |
 | `DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE` | `60.0` | 武器カテゴリ推定に使う最低OCR confidenceです。低い場合は `unknown` にします。 |
 | `DEATH_EVENT_CATEGORY_DEBUG_LOG` | `False` | カテゴリ推定の詳細ログを出します。 |
-| `DEATH_EVENT_WEAPON_KEYWORDS` | `None` | `None` の場合は標準の武器カテゴリ辞書を使います。 |
-| `DEATH_EVENT_REACTIONS_BY_CATEGORY` | `None` | `None` の場合は標準のカテゴリ別固定文を使います。 |
+| `DEATH_EVENT_WEAPON_KEYWORDS` | `None` | 武器カテゴリ分岐をONにした場合だけ使います。 |
+| `DEATH_EVENT_REACTIONS_BY_CATEGORY` | `None` | `None` の場合は標準の死亡状況別固定文を使います。 |
 | `DEATH_EVENT_REACTION_PHRASES` | `("今のはきついですね。", ...)` | 検出時にランダム再生する固定文です。 |
 
 標準設定:
@@ -268,11 +293,13 @@ CSVには `ocr_text`, `ocr_confidence`, `ocr_reason` が含まれます。OCR品
 - 空: `ocr_reason=empty`
 - OCR未実行/skip: `ocr_reason=disabled`, `pytesseract_unavailable`, `ocr_error`, `low_confidence`
 
-### カテゴリ別固定文リアクション（Phase 3）
+### 死亡状況別固定文リアクション（Phase 3）
 
-Phase 3では、死亡イベントにLLMを使わず、OCR結果を補助情報として武器カテゴリを推定し、カテゴリ別の固定文を選びます。低遅延・低負荷で、OCR誤読をそのまま発話しにくくし、LLMリソースをTwitchコメントや「しずく」呼びかけに残すためです。
+Phase 3では、死亡イベントにLLMを使わず、死亡状況別の固定文を選びます。低遅延・低負荷で、Twitchコメントや「しずく」呼びかけにLLMリソースを残すためです。
 
-OCR結果は信頼度つきの補助情報です。`DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE` 未満、OCR失敗、キーワード不一致の場合は `unknown` に落とし、汎用固定文で反応します。武器名やプレイヤー名を断定して発話しません。
+標準では `DEATH_EVENT_USE_CONTEXT_REACTIONS = True`、`DEATH_EVENT_USE_WEAPON_CATEGORY_REACTIONS = False` です。OCR成功/失敗に関係なく、発話内容にはOCR文字列を使いません。OCR結果はログ、CSV、将来検証用として残します。
+
+OCRによる武器カテゴリ分岐は実験機能です。現時点ではOCR品質が不安定なため既定OFFです。試す場合だけ `DEATH_EVENT_USE_WEAPON_CATEGORY_REACTIONS = True` にします。`DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE` 未満、OCR失敗、キーワード不一致の場合は `unknown` に落とし、死亡状況別固定文へフォールバックします。武器名やプレイヤー名を断定して発話しません。
 
 カテゴリ辞書や固定文を調整したい場合は、`config/config.py` に `DEATH_EVENT_WEAPON_KEYWORDS` または `DEATH_EVENT_REACTIONS_BY_CATEGORY` を追加します。未指定または `None` の場合は `src/screen_event_reactions.py` の標準辞書を使います。
 
@@ -307,17 +334,56 @@ OCR結果は信頼度つきの補助情報です。`DEATH_EVENT_OCR_CATEGORY_MIN
 - `OBSWindowOrProjectorFrameSource`: OBSプレビュー/プロジェクターをmssで読む代替候補
 - `OBSSourceFrameSource`: OBS WebSocketやOBS拡張による将来候補
 
-### Phase4 OBS入力方針
+### OBS Virtual Camera入力（Phase 4）
 
-現在はディスプレイキャプチャ前提のため、ゲーム画面を表示しておく必要があります。将来的な理想はOBS映像ソースから直接フレームを取得し、画面表示に依存せず検出できることです。
+OBS Virtual Cameraを使うと、ディスプレイ全画面表示に依存せず、OBSの映像を画面イベント検出の入力元にできます。死亡検出、OCR、固定文リアクション、Twitch優先、配信者発話固定文は従来通りです。
 
-Phase4の候補:
+設定例:
 
-1. OBS Virtual CameraをOpenCV `VideoCapture` で読む
-2. OBSプレビュー/プロジェクターを `mss` で読む
-3. OBS WebSocketまたはOBS拡張でソースフレームを取得する
+```python
+SCREEN_EVENT_ENABLED = True
+SCREEN_FRAME_SOURCE = "obs_virtual_camera"
+OBS_VIRTUAL_CAMERA_INDEX = 0
+OBS_VIRTUAL_CAMERA_WIDTH = 1920
+OBS_VIRTUAL_CAMERA_HEIGHT = 1080
+OBS_VIRTUAL_CAMERA_FPS = 30
+```
 
-最初の候補は OBS Virtual Camera が現実的です。理由は、死亡検出/OCR/queue投入の処理を変えず、`FrameSource` だけ差し替えればよいためです。Phase4ではOBS連携を追加しますが、Phase2では実装しません。
+OBS側では、配信画面を構成してから Virtual Camera を開始してください。OBSキャンバス解像度と `OBS_VIRTUAL_CAMERA_WIDTH` / `OBS_VIRTUAL_CAMERA_HEIGHT` を合わせると確認しやすくなります。実際の取得解像度は起動ログの `obs actual width=... height=... fps=...` を見て確認します。
+
+1フレーム取得して保存:
+
+```bash
+python src\screen_event_detector.py --frame-source obs_virtual_camera --capture-once --save-frame debug\obs_frame.png
+```
+
+1フレーム取得して死亡検出に通す:
+
+```bash
+python src\screen_event_detector.py --frame-source obs_virtual_camera --capture-once --detect
+```
+
+カメラ番号を変えて確認:
+
+```bash
+python src\screen_event_detector.py --frame-source obs_virtual_camera --capture-once --camera-index 1 --save-frame debug\obs_frame_1.png
+```
+
+OBS Virtual Cameraを選んで開けない場合、MSSへ自動fallbackしません。意図しない画面を読んで混乱しないよう、画面イベント検出だけ停止し、Twitch/STT/LLM/TTSは継続します。
+
+トラブルシュート:
+
+- カメラが開けない: OBS Virtual Cameraを開始し、`OBS_VIRTUAL_CAMERA_INDEX` を変え、他アプリが占有していないか確認します。
+- 黒画面になる: OBSのシーン、ソース表示、Virtual Camera開始状態を確認します。
+- 別カメラを読んでいる: `--camera-index` を変え、`--save-frame` で保存画像を確認します。
+- 解像度が想定と違う: 起動ログのactual width/heightを確認し、OBSキャンバスやVirtual Camera設定を見直します。
+- 検出しない: 保存フレームにゲーム画面が想定位置・比率で入っているか確認します。
+
+将来の候補:
+
+- `OBSWindowOrProjectorFrameSource`: OBSプロジェクターを `mss` で読む代替。
+- `OBSSourceFrameSource`: OBS WebSocketやOBS拡張による直接取得。
+- `SCREEN_FRAME_SOURCE_FALLBACK`: 明示設定した場合だけMSS fallbackを許可。
 
 ### 動画検証
 

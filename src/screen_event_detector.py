@@ -372,6 +372,75 @@ class MSSFrameSource(FrameSource):
         self.monitor = None
 
 
+class OBSVirtualCameraFrameSource(FrameSource):
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.capture = None
+
+    def start(self) -> None:
+        if cv2 is None:
+            raise RuntimeError(f"cv2_unavailable:{CV2_IMPORT_ERROR}")
+        camera_index = int(getattr(self.cfg, "obs_virtual_camera_index", 0))
+        width = int(getattr(self.cfg, "obs_virtual_camera_width", 1920))
+        height = int(getattr(self.cfg, "obs_virtual_camera_height", 1080))
+        fps = int(getattr(self.cfg, "obs_virtual_camera_fps", 30))
+        print("[SCREEN] frame source=obs_virtual_camera", flush=True)
+        print(f"[SCREEN] obs camera index={camera_index}", flush=True)
+        print(f"[SCREEN] obs requested width={width} height={height} fps={fps}", flush=True)
+
+        self.capture = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+        if not self.capture.isOpened():
+            self.capture.release()
+            self.capture = None
+            raise RuntimeError(f"obs_virtual_camera_unavailable index={camera_index}")
+
+        if width > 0:
+            self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        if height > 0:
+            self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if fps > 0:
+            self.capture.set(cv2.CAP_PROP_FPS, fps)
+
+        warmup_frames = max(0, int(getattr(self.cfg, "obs_virtual_camera_warmup_frames", 5)))
+        for _ in range(warmup_frames):
+            self.capture.read()
+
+        actual_width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        actual_height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        actual_fps = float(self.capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        print(
+            f"[SCREEN] obs actual width={actual_width} height={actual_height} fps={actual_fps:.1f}",
+            flush=True,
+        )
+
+    def read(self) -> np.ndarray:
+        if self.capture is None:
+            raise RuntimeError("frame_source_not_started")
+        ok, frame = self.capture.read()
+        if not ok or frame is None or frame.size == 0:
+            raise RuntimeError("obs_virtual_camera_frame_unavailable")
+        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        width = int(getattr(self.cfg, "screen_capture_width", 640))
+        height = int(getattr(self.cfg, "screen_capture_height", 360))
+        if width > 0 and height > 0 and (image.shape[1] != width or image.shape[0] != height):
+            image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+        return image
+
+    def stop(self) -> None:
+        if self.capture is not None:
+            self.capture.release()
+        self.capture = None
+
+
+def create_frame_source(cfg) -> FrameSource:
+    frame_source = str(getattr(cfg, "screen_frame_source", "mss") or "mss").strip().lower()
+    if frame_source == "mss":
+        return MSSFrameSource(cfg)
+    if frame_source == "obs_virtual_camera":
+        return OBSVirtualCameraFrameSource(cfg)
+    raise RuntimeError(f"unknown_frame_source source={frame_source}")
+
+
 class DeathDetector:
     def __init__(self, cfg, templates):
         self.cfg = cfg
@@ -562,7 +631,8 @@ class ScreenEventDetector:
         if cv2 is None:
             print(f"[SCREEN] disabled reason=cv2_unavailable error={CV2_IMPORT_ERROR}", flush=True)
             return
-        if mss is None:
+        frame_source_name = str(getattr(self.cfg, "screen_frame_source", "mss") or "mss").strip().lower()
+        if frame_source_name == "mss" and mss is None:
             print(f"[SCREEN] disabled reason=mss_unavailable error={MSS_IMPORT_ERROR}", flush=True)
             return
         self.templates = load_templates(getattr(self.cfg, "death_event_template_path", ""))
@@ -571,7 +641,7 @@ class ScreenEventDetector:
             return
         print(f"[SCREEN] templates loaded count={len(self.templates)}", flush=True)
         self.detector = DeathDetector(self.cfg, self.templates)
-        self.frame_source = MSSFrameSource(self.cfg)
+        self.frame_source = create_frame_source(self.cfg)
         if _ocr_enabled(self.cfg):
             configure_tesseract(self.cfg)
             if pytesseract is None:
@@ -605,7 +675,7 @@ class ScreenEventDetector:
         debug = bool(getattr(self.cfg, "screen_event_debug_log", False))
         try:
             if self.frame_source is None:
-                self.frame_source = MSSFrameSource(self.cfg)
+                self.frame_source = create_frame_source(self.cfg)
             if self.detector is None:
                 self.detector = DeathDetector(self.cfg, self.templates)
             self.frame_source.start()
@@ -698,9 +768,17 @@ if __name__ == "__main__":
             return default
         return getattr(module, name, default)
 
-    parser = argparse.ArgumentParser(description="Test screen death detection against an image file.")
-    parser.add_argument("image")
+    parser = argparse.ArgumentParser(description="Test screen death detection against an image file or frame source.")
+    parser.add_argument("image", nargs="?")
     parser.add_argument("--template", default="assets/templates/splatoon_death_yarareta.png")
+    parser.add_argument("--frame-source", default=None, choices=("mss", "obs_virtual_camera"))
+    parser.add_argument("--capture-once", action="store_true", help="Capture one frame from the configured frame source.")
+    parser.add_argument("--save-frame", default=None, help="Save captured frame to this path.")
+    parser.add_argument("--detect", action="store_true", help="Run death detection for captured frame.")
+    parser.add_argument("--camera-index", type=int, default=None)
+    parser.add_argument("--camera-width", type=int, default=None)
+    parser.add_argument("--camera-height", type=int, default=None)
+    parser.add_argument("--camera-fps", type=int, default=None)
     parser.add_argument("--ocr", action="store_true", help="Run OCR when death is detected.")
     parser.add_argument("--ocr-lang", default=None)
     parser.add_argument("--ocr-roi", default=None, help="Override OCR ROI as x1,y1,x2,y2.")
@@ -716,8 +794,16 @@ if __name__ == "__main__":
         death_event_roi = _cfg_value(cli_config, "DEATH_EVENT_ROI", (0.32, 0.21, 0.67, 0.54))
         death_event_text_roi = _cfg_value(cli_config, "DEATH_EVENT_TEXT_ROI", (0.42, 0.33, 0.59, 0.46))
         death_event_template_path = args.template
+        screen_frame_source = args.frame_source or _cfg_value(cli_config, "SCREEN_FRAME_SOURCE", "mss")
         screen_capture_width = _cfg_value(cli_config, "SCREEN_CAPTURE_WIDTH", 640)
         screen_capture_height = _cfg_value(cli_config, "SCREEN_CAPTURE_HEIGHT", 360)
+        screen_capture_monitor_index = _cfg_value(cli_config, "SCREEN_CAPTURE_MONITOR_INDEX", 1)
+        screen_capture_region = _cfg_value(cli_config, "SCREEN_CAPTURE_REGION", None)
+        obs_virtual_camera_index = args.camera_index if args.camera_index is not None else _cfg_value(cli_config, "OBS_VIRTUAL_CAMERA_INDEX", 0)
+        obs_virtual_camera_width = args.camera_width if args.camera_width is not None else _cfg_value(cli_config, "OBS_VIRTUAL_CAMERA_WIDTH", 1920)
+        obs_virtual_camera_height = args.camera_height if args.camera_height is not None else _cfg_value(cli_config, "OBS_VIRTUAL_CAMERA_HEIGHT", 1080)
+        obs_virtual_camera_fps = args.camera_fps if args.camera_fps is not None else _cfg_value(cli_config, "OBS_VIRTUAL_CAMERA_FPS", 30)
+        obs_virtual_camera_warmup_frames = _cfg_value(cli_config, "OBS_VIRTUAL_CAMERA_WARMUP_FRAMES", 5)
         death_event_min_template_score = _cfg_value(cli_config, "DEATH_EVENT_MIN_TEMPLATE_SCORE", 0.55)
         death_event_shape_min_template_score = _cfg_value(cli_config, "DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE", 0.40)
         death_event_white_ratio_min = _cfg_value(cli_config, "DEATH_EVENT_WHITE_RATIO_MIN", 0.015)
@@ -735,14 +821,37 @@ if __name__ == "__main__":
         death_event_ocr_debug_log = args.debug_ocr or _cfg_value(cli_config, "DEATH_EVENT_OCR_DEBUG_LOG", False)
         death_event_ocr_save_debug_images = args.save_ocr_debug
         death_event_ocr_debug_dir = args.ocr_debug_dir or _cfg_value(cli_config, "DEATH_EVENT_OCR_DEBUG_DIR", "debug/ocr")
-        death_event_ocr_debug_source_name = args.image
+        death_event_ocr_debug_source_name = args.image or str(screen_frame_source)
 
     if cv2 is None:
         raise SystemExit(f"cv2 is unavailable: {CV2_IMPORT_ERROR}")
-    img = cv2.imread(args.image, cv2.IMREAD_COLOR)
-    if img is None:
-        raise SystemExit(f"image unreadable: {args.image}")
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    if args.capture_once:
+        frame_source = create_frame_source(_Cfg)
+        try:
+            frame_source.start()
+            rgb = frame_source.read()
+        finally:
+            frame_source.stop()
+
+        if args.save_frame:
+            save_path = Path(args.save_frame)
+            if not save_path.is_absolute():
+                save_path = _project_root() / save_path
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(save_path), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+            print(f"[SCREEN] frame saved path={save_path}", flush=True)
+
+        if not args.detect and not args.ocr:
+            raise SystemExit(0)
+    else:
+        if not args.image:
+            parser.error("image is required unless --capture-once is used.")
+        img = cv2.imread(args.image, cv2.IMREAD_COLOR)
+        if img is None:
+            raise SystemExit(f"image unreadable: {args.image}")
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
     tpl = load_templates(args.template)
     result = detect_death_event(rgb, _Cfg, tpl)
     print(result)

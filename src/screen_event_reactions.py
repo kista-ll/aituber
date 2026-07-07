@@ -350,7 +350,41 @@ def _choose_phrase(reactions_by_category, weapon_category: str, emotion_category
     return "", "fallback_fixed_phrase"
 
 
+def select_death_context_reaction(cfg) -> Dict[str, Any]:
+    reactions_by_category = _get_mapping(
+        cfg,
+        "death_event_reactions_by_category",
+        DEFAULT_DEATH_EVENT_REACTIONS_BY_CATEGORY,
+    )
+    emotion_category = choose_death_emotion_category("unknown")
+    phrase, _source = _choose_phrase(reactions_by_category, "unknown", emotion_category)
+    return {
+        "phrase": phrase,
+        "weapon_category": "unknown",
+        "emotion_category": emotion_category,
+        "reaction_source": "context_fixed_phrase" if phrase else "fallback_fixed_phrase",
+        "normalized_ocr_text": "",
+        "matched_keywords": (),
+        "category_reason": "context_reaction",
+    }
+
+
 def select_death_reaction(event_details: dict, cfg) -> Dict[str, Any]:
+    use_context = bool(getattr(cfg, "death_event_use_context_reactions", True))
+    use_weapon_category = bool(getattr(cfg, "death_event_use_weapon_category_reactions", False))
+    if not use_weapon_category:
+        if use_context:
+            return select_death_context_reaction(cfg)
+        return {
+            "phrase": "",
+            "weapon_category": "unknown",
+            "emotion_category": "",
+            "reaction_source": "fallback_fixed_phrase",
+            "normalized_ocr_text": "",
+            "matched_keywords": (),
+            "category_reason": "category_disabled",
+        }
+
     details = event_details or {}
     ocr_reason = str(details.get("ocr_reason", "") or "")
     ocr_text = str(details.get("ocr_text", "") or "")
@@ -367,6 +401,13 @@ def select_death_reaction(event_details: dict, cfg) -> Dict[str, Any]:
         category = classify_death_weapon_category_detail(ocr_text, ocr_confidence, cfg)
 
     weapon_category = category["weapon_category"]
+    if weapon_category == "unknown" and use_context:
+        reaction = select_death_context_reaction(cfg)
+        reaction["normalized_ocr_text"] = category["normalized_ocr_text"]
+        reaction["matched_keywords"] = category["matched_keywords"]
+        reaction["category_reason"] = category["category_reason"]
+        return reaction
+
     emotion_category = choose_death_emotion_category(weapon_category)
     reactions_by_category = _get_mapping(
         cfg,

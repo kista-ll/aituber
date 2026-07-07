@@ -35,7 +35,8 @@ class EvalConfig:
     death_event_ocr_scale = 3.0
     death_event_ocr_preprocess_mode = "default"
     death_event_ocr_tesseract_cmd = ""
-    death_event_use_category_reactions = True
+    death_event_use_context_reactions = True
+    death_event_use_weapon_category_reactions = False
     death_event_ocr_category_min_confidence = 60.0
     death_event_weapon_keywords = None
     death_event_reactions_by_category = None
@@ -169,6 +170,8 @@ def main():
     )
     parser.add_argument("--save-ocr-debug", action="store_true", help="Save OCR crop and processed images.")
     parser.add_argument("--ocr-debug-dir", default="debug/ocr", help="Directory for OCR debug images.")
+    parser.add_argument("--use-weapon-category-reactions", action="store_true", help="Use experimental OCR weapon category reactions.")
+    parser.add_argument("--disable-context-reactions", action="store_true", help="Disable context fixed reactions.")
     parser.add_argument("--tesseract-cmd", default="", help="Optional path to tesseract executable.")
     args = parser.parse_args()
 
@@ -189,6 +192,8 @@ def main():
         cfg.death_event_ocr_roi = parse_roi(args.ocr_roi)
     cfg.death_event_ocr_save_debug_images = args.save_ocr_debug
     cfg.death_event_ocr_debug_dir = args.ocr_debug_dir
+    cfg.death_event_use_weapon_category_reactions = args.use_weapon_category_reactions
+    cfg.death_event_use_context_reactions = not args.disable_context_reactions
     cfg.death_event_ocr_tesseract_cmd = args.tesseract_cmd
     templates = load_templates(args.template)
     if not templates:

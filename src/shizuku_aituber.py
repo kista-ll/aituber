@@ -43,6 +43,14 @@ except BaseException as e:
 else:
     SCREEN_REACTION_IMPORT_ERROR = None
 
+try:
+    from streamer_reactions import decide_streamer_response
+except BaseException as e:
+    decide_streamer_response = None
+    STREAMER_REACTION_IMPORT_ERROR = e
+else:
+    STREAMER_REACTION_IMPORT_ERROR = None
+
 
 # =========================================
 # config/config.py を読み込む
@@ -78,6 +86,13 @@ AI_SPEECH_COOLDOWN_SEC = config_value("AI_SPEECH_COOLDOWN_SEC", 8.0)
 STREAMER_RESPONSE_PROBABILITY = config_value("STREAMER_RESPONSE_PROBABILITY", 0.25)
 SHIZUKU_CALL_KEYWORDS = config_value("SHIZUKU_CALL_KEYWORDS", ("しずく", "シズク", "雫"))
 STREAMER_FORCE_REPLY_KEYWORDS = config_value("STREAMER_FORCE_REPLY_KEYWORDS", ("しずく", "どう思う", "見て", "聞いて"))
+STREAMER_FIXED_RESPONSE_ENABLED = config_value("STREAMER_FIXED_RESPONSE_ENABLED", True)
+STREAMER_LLM_ON_ADDRESS_ONLY = config_value("STREAMER_LLM_ON_ADDRESS_ONLY", True)
+STREAMER_FIXED_RESPONSE_RATE = config_value("STREAMER_FIXED_RESPONSE_RATE", 0.5)
+STREAMER_SHORT_NOISE_SKIP = config_value("STREAMER_SHORT_NOISE_SKIP", True)
+STREAMER_FIXED_RESPONSE_COOLDOWN_SEC = config_value("STREAMER_FIXED_RESPONSE_COOLDOWN_SEC", 15.0)
+STREAMER_UTTERANCE_KEYWORDS = config_value("STREAMER_UTTERANCE_KEYWORDS", None)
+STREAMER_FIXED_RESPONSE_PHRASES = config_value("STREAMER_FIXED_RESPONSE_PHRASES", None)
 
 TWITCH_COMMENT_ENABLED = config_value("TWITCH_COMMENT_ENABLED", False)
 TWITCH_COMMENT_PRIORITY = config_value("TWITCH_COMMENT_PRIORITY", True)
@@ -92,6 +107,7 @@ APOLOGY_REPLACEMENT_PHRASES = config_value(
 
 SCREEN_EVENT_ENABLED = config_value("SCREEN_EVENT_ENABLED", False)
 SCREEN_EVENT_MODE = config_value("SCREEN_EVENT_MODE", "death_detect_only")
+SCREEN_FRAME_SOURCE = config_value("SCREEN_FRAME_SOURCE", "mss")
 SCREEN_CAPTURE_INTERVAL_SEC = config_value("SCREEN_CAPTURE_INTERVAL_SEC", 0.25)
 SCREEN_CAPTURE_MONITOR_INDEX = config_value("SCREEN_CAPTURE_MONITOR_INDEX", 1)
 SCREEN_CAPTURE_WIDTH = config_value("SCREEN_CAPTURE_WIDTH", 640)
@@ -99,6 +115,11 @@ SCREEN_CAPTURE_HEIGHT = config_value("SCREEN_CAPTURE_HEIGHT", 360)
 SCREEN_CAPTURE_REGION = config_value("SCREEN_CAPTURE_REGION", None)
 SCREEN_EVENT_DEBUG_LOG = config_value("SCREEN_EVENT_DEBUG_LOG", False)
 SCREEN_EVENT_LOG_EVERY_SEC = config_value("SCREEN_EVENT_LOG_EVERY_SEC", 10.0)
+OBS_VIRTUAL_CAMERA_INDEX = config_value("OBS_VIRTUAL_CAMERA_INDEX", 0)
+OBS_VIRTUAL_CAMERA_WIDTH = config_value("OBS_VIRTUAL_CAMERA_WIDTH", 1920)
+OBS_VIRTUAL_CAMERA_HEIGHT = config_value("OBS_VIRTUAL_CAMERA_HEIGHT", 1080)
+OBS_VIRTUAL_CAMERA_FPS = config_value("OBS_VIRTUAL_CAMERA_FPS", 30)
+OBS_VIRTUAL_CAMERA_WARMUP_FRAMES = config_value("OBS_VIRTUAL_CAMERA_WARMUP_FRAMES", 5)
 
 DEATH_EVENT_COOLDOWN_SEC = config_value("DEATH_EVENT_COOLDOWN_SEC", 20.0)
 DEATH_EVENT_USE_LLM = config_value("DEATH_EVENT_USE_LLM", False)
@@ -122,7 +143,8 @@ DEATH_EVENT_OCR_TESSERACT_CMD = config_value("DEATH_EVENT_OCR_TESSERACT_CMD", ""
 DEATH_EVENT_OCR_DEBUG_LOG = config_value("DEATH_EVENT_OCR_DEBUG_LOG", False)
 DEATH_EVENT_OCR_SAVE_DEBUG_IMAGES = config_value("DEATH_EVENT_OCR_SAVE_DEBUG_IMAGES", False)
 DEATH_EVENT_OCR_DEBUG_DIR = config_value("DEATH_EVENT_OCR_DEBUG_DIR", "debug/ocr")
-DEATH_EVENT_USE_CATEGORY_REACTIONS = config_value("DEATH_EVENT_USE_CATEGORY_REACTIONS", True)
+DEATH_EVENT_USE_CONTEXT_REACTIONS = config_value("DEATH_EVENT_USE_CONTEXT_REACTIONS", True)
+DEATH_EVENT_USE_WEAPON_CATEGORY_REACTIONS = config_value("DEATH_EVENT_USE_WEAPON_CATEGORY_REACTIONS", False)
 DEATH_EVENT_CATEGORY_DEBUG_LOG = config_value("DEATH_EVENT_CATEGORY_DEBUG_LOG", False)
 DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE = config_value("DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE", 60.0)
 DEATH_EVENT_WEAPON_KEYWORDS = config_value("DEATH_EVENT_WEAPON_KEYWORDS", None)
@@ -178,6 +200,13 @@ class Config:
     streamer_response_probability: float = STREAMER_RESPONSE_PROBABILITY
     shizuku_call_keywords: tuple = SHIZUKU_CALL_KEYWORDS
     streamer_force_reply_keywords: tuple = STREAMER_FORCE_REPLY_KEYWORDS
+    streamer_fixed_response_enabled: bool = STREAMER_FIXED_RESPONSE_ENABLED
+    streamer_llm_on_address_only: bool = STREAMER_LLM_ON_ADDRESS_ONLY
+    streamer_fixed_response_rate: float = STREAMER_FIXED_RESPONSE_RATE
+    streamer_short_noise_skip: bool = STREAMER_SHORT_NOISE_SKIP
+    streamer_fixed_response_cooldown_sec: float = STREAMER_FIXED_RESPONSE_COOLDOWN_SEC
+    streamer_utterance_keywords: Optional[dict] = STREAMER_UTTERANCE_KEYWORDS
+    streamer_fixed_response_phrases: Optional[dict] = STREAMER_FIXED_RESPONSE_PHRASES
 
     twitch_comment_enabled: bool = TWITCH_COMMENT_ENABLED
     twitch_comment_priority: bool = TWITCH_COMMENT_PRIORITY
@@ -189,6 +218,7 @@ class Config:
 
     screen_event_enabled: bool = SCREEN_EVENT_ENABLED
     screen_event_mode: str = SCREEN_EVENT_MODE
+    screen_frame_source: str = SCREEN_FRAME_SOURCE
     screen_capture_interval_sec: float = SCREEN_CAPTURE_INTERVAL_SEC
     screen_capture_monitor_index: int = SCREEN_CAPTURE_MONITOR_INDEX
     screen_capture_width: int = SCREEN_CAPTURE_WIDTH
@@ -196,6 +226,11 @@ class Config:
     screen_capture_region: Optional[tuple] = SCREEN_CAPTURE_REGION
     screen_event_debug_log: bool = SCREEN_EVENT_DEBUG_LOG
     screen_event_log_every_sec: float = SCREEN_EVENT_LOG_EVERY_SEC
+    obs_virtual_camera_index: int = OBS_VIRTUAL_CAMERA_INDEX
+    obs_virtual_camera_width: int = OBS_VIRTUAL_CAMERA_WIDTH
+    obs_virtual_camera_height: int = OBS_VIRTUAL_CAMERA_HEIGHT
+    obs_virtual_camera_fps: int = OBS_VIRTUAL_CAMERA_FPS
+    obs_virtual_camera_warmup_frames: int = OBS_VIRTUAL_CAMERA_WARMUP_FRAMES
 
     death_event_cooldown_sec: float = DEATH_EVENT_COOLDOWN_SEC
     death_event_use_llm: bool = DEATH_EVENT_USE_LLM
@@ -219,7 +254,8 @@ class Config:
     death_event_ocr_debug_log: bool = DEATH_EVENT_OCR_DEBUG_LOG
     death_event_ocr_save_debug_images: bool = DEATH_EVENT_OCR_SAVE_DEBUG_IMAGES
     death_event_ocr_debug_dir: str = DEATH_EVENT_OCR_DEBUG_DIR
-    death_event_use_category_reactions: bool = DEATH_EVENT_USE_CATEGORY_REACTIONS
+    death_event_use_context_reactions: bool = DEATH_EVENT_USE_CONTEXT_REACTIONS
+    death_event_use_weapon_category_reactions: bool = DEATH_EVENT_USE_WEAPON_CATEGORY_REACTIONS
     death_event_category_debug_log: bool = DEATH_EVENT_CATEGORY_DEBUG_LOG
     death_event_ocr_category_min_confidence: float = DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE
     death_event_weapon_keywords: Optional[dict] = DEATH_EVENT_WEAPON_KEYWORDS
@@ -704,6 +740,7 @@ class RuntimeState:
     last_assistant_speech_time: float
     last_twitch_comment_time: float = 0.0
     last_screen_event_time: float = 0.0
+    last_streamer_fixed_response_time: float = 0.0
     last_silent_phrase: Optional[str] = None
 
 def main():
@@ -840,7 +877,11 @@ def main():
             )
 
         reaction = {}
-        if CFG.death_event_use_category_reactions and select_death_reaction is not None:
+        use_screen_reaction_selector = (
+            CFG.death_event_use_context_reactions
+            or CFG.death_event_use_weapon_category_reactions
+        )
+        if use_screen_reaction_selector and select_death_reaction is not None:
             reaction = select_death_reaction(details, CFG)
             if CFG.death_event_category_debug_log or CFG.screen_event_debug_log:
                 print(
@@ -852,7 +893,7 @@ def main():
                     f"category_reason={reaction.get('category_reason', '')}",
                     flush=True,
                 )
-        elif CFG.death_event_use_category_reactions and select_death_reaction is None:
+        elif use_screen_reaction_selector and select_death_reaction is None:
             print(f"[SCREEN] category reactions disabled reason={SCREEN_REACTION_IMPORT_ERROR}", flush=True)
 
         phrase = str(reaction.get("phrase", "") or "").strip()
@@ -930,7 +971,37 @@ def main():
                 print(f"あなた: {user_text}", flush=True)
 
                 now = time.monotonic()
-                if not should_reply_to_streamer(user_text, now, state, CFG):
+                if decide_streamer_response is None:
+                    print(f"[STREAMER] response_source=llm reason=reaction_import_failed error={STREAMER_REACTION_IMPORT_ERROR}", flush=True)
+                    if not should_reply_to_streamer(user_text, now, state, CFG):
+                        continue
+                    speak_with_llm(user_text, "streamer")
+                    print("-" * 40, flush=True)
+                    continue
+
+                decision = decide_streamer_response(user_text, now, state, CFG)
+                utterance_type = decision.get("utterance_type", "generic")
+                action = decision.get("action", "skip")
+                reason = decision.get("reason", "")
+                cooldown_remaining = float(decision.get("cooldown_remaining", 0.0) or 0.0)
+                print(
+                    f"[STREAMER] utterance_type={utterance_type} "
+                    f"response_source={action} fixed_response_reason={reason} "
+                    f"cooldown_remaining={cooldown_remaining:.1f}",
+                    flush=True,
+                )
+
+                if action == "skip":
+                    continue
+
+                if action == "fixed_phrase":
+                    phrase = str(decision.get("phrase", "") or "").strip()
+                    if not phrase:
+                        print("[STREAMER] response_source=skipped reason=no_fixed_phrase", flush=True)
+                        continue
+                    speak_fixed_phrase(phrase, "streamer_fixed")
+                    state.last_streamer_fixed_response_time = time.monotonic()
+                    print("-" * 40, flush=True)
                     continue
 
                 speak_with_llm(user_text, "streamer")
