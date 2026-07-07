@@ -93,6 +93,35 @@ STREAMER_SHORT_NOISE_SKIP = config_value("STREAMER_SHORT_NOISE_SKIP", True)
 STREAMER_FIXED_RESPONSE_COOLDOWN_SEC = config_value("STREAMER_FIXED_RESPONSE_COOLDOWN_SEC", 15.0)
 STREAMER_UTTERANCE_KEYWORDS = config_value("STREAMER_UTTERANCE_KEYWORDS", None)
 STREAMER_FIXED_RESPONSE_PHRASES = config_value("STREAMER_FIXED_RESPONSE_PHRASES", None)
+SHIZUKU_ADDRESS_STRONG_KEYWORDS = config_value(
+    "SHIZUKU_ADDRESS_STRONG_KEYWORDS",
+    ("しずく", "雫", "しづく", "シズク", "しずくちゃん", "しーちゃん"),
+)
+SHIZUKU_ADDRESS_WEAK_KEYWORDS = config_value(
+    "SHIZUKU_ADDRESS_WEAK_KEYWORDS",
+    ("しず", "シズ", "しずこ", "静岡", "しずおか", "しずか", "続く"),
+)
+SHIZUKU_ADDRESS_CONTEXT_WORDS = config_value(
+    "SHIZUKU_ADDRESS_CONTEXT_WORDS",
+    ("どう", "今の", "これ", "見て", "聞いて", "思う", "教えて", "お願い", "反応して", "何", "なんで", "自己紹介", "挨拶", "説明", "あなた誰", "何者"),
+)
+LLM_ADDRESS_RESPONSE_MAX_CHARS = config_value("LLM_ADDRESS_RESPONSE_MAX_CHARS", 160)
+LLM_ADDRESS_RESPONSE_MIN_SENTENCES = config_value("LLM_ADDRESS_RESPONSE_MIN_SENTENCES", 1)
+LLM_ADDRESS_RESPONSE_MAX_SENTENCES = config_value("LLM_ADDRESS_RESPONSE_MAX_SENTENCES", 4)
+LLM_ADDRESS_RESPONSE_STYLE = config_value("LLM_ADDRESS_RESPONSE_STYLE", "conversational")
+STREAMER_KEYWORD_FIXED_RESPONSE_ENABLED = config_value("STREAMER_KEYWORD_FIXED_RESPONSE_ENABLED", True)
+STREAMER_KEYWORD_FIXED_RESPONSES = config_value(
+    "STREAMER_KEYWORD_FIXED_RESPONSES",
+    {
+        "self_intro": {
+            "keywords": ("自己紹介", "初見さん", "挨拶", "あなた誰", "何者", "説明して"),
+            "phrases": (
+                "月野しずくです。近所に住んでるゲーム好きのお姉さんみたいな立ち位置で、配信を横から見ています。対戦中は少しだけ口が悪くなることがあります。",
+            ),
+        },
+    },
+)
+STREAMER_REACTION_DEBUG_LOG = config_value("STREAMER_REACTION_DEBUG_LOG", False)
 
 TWITCH_COMMENT_ENABLED = config_value("TWITCH_COMMENT_ENABLED", False)
 TWITCH_COMMENT_PRIORITY = config_value("TWITCH_COMMENT_PRIORITY", True)
@@ -222,6 +251,16 @@ class Config:
     streamer_fixed_response_cooldown_sec: float = STREAMER_FIXED_RESPONSE_COOLDOWN_SEC
     streamer_utterance_keywords: Optional[dict] = STREAMER_UTTERANCE_KEYWORDS
     streamer_fixed_response_phrases: Optional[dict] = STREAMER_FIXED_RESPONSE_PHRASES
+    shizuku_address_strong_keywords: tuple = SHIZUKU_ADDRESS_STRONG_KEYWORDS
+    shizuku_address_weak_keywords: tuple = SHIZUKU_ADDRESS_WEAK_KEYWORDS
+    shizuku_address_context_words: tuple = SHIZUKU_ADDRESS_CONTEXT_WORDS
+    llm_address_response_max_chars: int = LLM_ADDRESS_RESPONSE_MAX_CHARS
+    llm_address_response_min_sentences: int = LLM_ADDRESS_RESPONSE_MIN_SENTENCES
+    llm_address_response_max_sentences: int = LLM_ADDRESS_RESPONSE_MAX_SENTENCES
+    llm_address_response_style: str = LLM_ADDRESS_RESPONSE_STYLE
+    streamer_keyword_fixed_response_enabled: bool = STREAMER_KEYWORD_FIXED_RESPONSE_ENABLED
+    streamer_keyword_fixed_responses: Optional[dict] = STREAMER_KEYWORD_FIXED_RESPONSES
+    streamer_reaction_debug_log: bool = STREAMER_REACTION_DEBUG_LOG
 
     twitch_comment_enabled: bool = TWITCH_COMMENT_ENABLED
     twitch_comment_priority: bool = TWITCH_COMMENT_PRIORITY
@@ -564,12 +603,8 @@ class LLM:
         if self.current_game:
             self.topic = self.current_game
 
-    def sanitize_reply(self, reply: str) -> str:
+    def _clean_reply_text(self, reply: str) -> str:
         reply = reply.replace("\n", " ").replace("「", "").replace("」", "").strip()
-
-        if "。" in reply:
-            reply = reply.split("。")[0] + "。"
-
         reply = reply.replace("？", "。").replace("?", "。")
 
         banned_phrases = [
@@ -586,11 +621,31 @@ class LLM:
         }
         for src, dst in replacements.items():
             reply = reply.replace(src, dst)
+        return reply.strip(" 、。")
 
-        reply = reply.strip(" 、。")
+    def _limit_sentences(self, reply: str, max_sentences: int) -> str:
+        parts = [part.strip(" 、。") for part in re.split(r"。+", reply) if part.strip(" 、。")]
+        if not parts:
+            return ""
+        max_sentences = max(1, max_sentences)
+        return "。".join(parts[:max_sentences]) + "。"
+
+    def sanitize_reply(self, reply: str, response_mode: str = "normal") -> str:
+        reply = self._clean_reply_text(reply)
         if not reply:
             reply = "いいですね。"
 
+        if response_mode == "address_long":
+            reply = self._limit_sentences(reply, int(self.cfg.llm_address_response_max_sentences))
+            if self.cfg.apology_suppression_enabled:
+                reply = suppress_apology_reply(reply, self.cfg)
+            reply = clamp_text(reply, int(self.cfg.llm_address_response_max_chars))
+            if not reply.endswith("。"):
+                reply += "。"
+            return reply
+
+        if "。" in reply:
+            reply = reply.split("。")[0] + "。"
         if not reply.endswith("。"):
             reply += "。"
 
@@ -603,11 +658,22 @@ class LLM:
 
         return reply
 
-    def chat(self, user_text: str) -> str:
+    def chat(self, user_text: str, response_mode: str = "normal") -> str:
         self.update_topic(user_text)
 
         url = f"{self.cfg.ollama_base_url}/api/chat"
-        extra = "\n\n必ず短く。1文のみ。質問で返さない。40文字以内。"
+        if response_mode == "address_long":
+            extra = (
+                "\n\n配信者から呼びかけられています。"
+                "自然な会話として2〜4文、80〜160文字程度で返してください。"
+                "長い解説、質問返し、謝罪連発は避けてください。"
+            )
+            num_predict = 120
+            temperature = 0.35
+        else:
+            extra = "\n\n必ず短く。1文のみ。質問で返さない。40文字以内。"
+            num_predict = 20
+            temperature = 0.3
 
         messages = [
             {"role": "system", "content": self.cfg.system_prompt + extra},
@@ -621,20 +687,24 @@ class LLM:
             "model": self.cfg.ollama_model,
             "stream": False,
             "options": {
-                "num_predict": 20,
-                "temperature": 0.3,
+                "num_predict": num_predict,
+                "temperature": temperature,
             },
             "messages": messages,
         }
 
-        print(f"[LLM] request -> {url}  model={self.cfg.ollama_model} timeout={self.cfg.llm_timeout_sec}s", flush=True)
+        print(
+            f"[LLM] request -> {url}  model={self.cfg.ollama_model} "
+            f"mode={response_mode} timeout={self.cfg.llm_timeout_sec}s",
+            flush=True,
+        )
         r = requests.post(url, json=payload, timeout=self.cfg.llm_timeout_sec)
         print(f"[LLM] response status={r.status_code}", flush=True)
         r.raise_for_status()
 
         data = r.json()
         content = data.get("message", {}).get("content", "").strip()
-        reply = self.sanitize_reply(content)
+        reply = self.sanitize_reply(content, response_mode=response_mode)
 
         self.history.append({"role": "user", "content": user_text})
         self.history.append({"role": "assistant", "content": reply})
@@ -823,9 +893,9 @@ def main():
         last_assistant_speech_time=time.monotonic()
     )
 
-    def speak_with_llm(user_text: str, label: str) -> None:
+    def speak_with_llm(user_text: str, label: str, response_mode: str = "normal") -> None:
         t2 = t()
-        reply = llm.chat(user_text)
+        reply = llm.chat(user_text, response_mode=response_mode)
         t3 = t()
         log_time("LLM", t3 - t2)
 
@@ -1020,21 +1090,34 @@ def main():
                     f"cooldown_remaining={cooldown_remaining:.1f}",
                     flush=True,
                 )
+                if CFG.streamer_reaction_debug_log:
+                    print(
+                        f"[STREAMER] raw_text={user_text} "
+                        f"normalized_text={decision.get('normalized_text', '')} "
+                        f"address_match_type={decision.get('address_match_type', 'none')} "
+                        f"matched_address_keyword={decision.get('matched_address_keyword', '')} "
+                        f"matched_context_word={decision.get('matched_context_word', '')} "
+                        f"keyword_response_id={decision.get('keyword_response_id', '')} "
+                        f"llm_response_mode={decision.get('llm_response_mode', 'normal')}",
+                        flush=True,
+                    )
 
                 if action == "skip":
                     continue
 
-                if action == "fixed_phrase":
+                if action in {"fixed_phrase", "keyword_fixed_phrase"}:
                     phrase = str(decision.get("phrase", "") or "").strip()
                     if not phrase:
                         print("[STREAMER] response_source=skipped reason=no_fixed_phrase", flush=True)
                         continue
-                    speak_fixed_phrase(phrase, "streamer_fixed")
+                    label = "streamer_keyword" if action == "keyword_fixed_phrase" else "streamer_fixed"
+                    speak_fixed_phrase(phrase, label)
                     state.last_streamer_fixed_response_time = time.monotonic()
                     print("-" * 40, flush=True)
                     continue
 
-                speak_with_llm(user_text, "streamer")
+                response_mode = str(decision.get("llm_response_mode", "normal") or "normal")
+                speak_with_llm(user_text, "streamer", response_mode=response_mode)
                 print("-" * 40, flush=True)
 
             except KeyboardInterrupt:

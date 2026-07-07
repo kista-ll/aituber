@@ -150,6 +150,32 @@ STREAMER_FIXED_RESPONSE_COOLDOWN_SEC = 15.0
 STREAMER_UTTERANCE_KEYWORDS = None  # None の場合は標準分類キーワードを使います。
 STREAMER_FIXED_RESPONSE_PHRASES = None  # None の場合は標準固定文を使います。
 
+# 呼びかけ判定。弱一致は文脈語がある場合だけ「しずく」への呼びかけとして扱います。
+SHIZUKU_ADDRESS_STRONG_KEYWORDS = ("しずく", "雫", "しづく", "シズク", "しずくちゃん", "しーちゃん")
+SHIZUKU_ADDRESS_WEAK_KEYWORDS = ("しず", "シズ", "しずこ", "静岡", "しずおか", "しずか", "続く")
+SHIZUKU_ADDRESS_CONTEXT_WORDS = (
+    "どう", "今の", "これ", "見て", "聞いて", "思う", "教えて", "お願い", "反応して",
+    "何", "なんで", "自己紹介", "挨拶", "説明", "あなた誰", "何者",
+)
+
+# 呼びかけLLMだけ通常より長めに返します。Twitchコメントや固定文には影響しません。
+LLM_ADDRESS_RESPONSE_MAX_CHARS = 160
+LLM_ADDRESS_RESPONSE_MIN_SENTENCES = 1
+LLM_ADDRESS_RESPONSE_MAX_SENTENCES = 4
+LLM_ADDRESS_RESPONSE_STYLE = "conversational"
+
+# 自己紹介などの定型要求はLLMではなく固定文で返します。
+STREAMER_KEYWORD_FIXED_RESPONSE_ENABLED = True
+STREAMER_KEYWORD_FIXED_RESPONSES = {
+    "self_intro": {
+        "keywords": ("自己紹介", "初見さん", "挨拶", "あなた誰", "何者", "説明して"),
+        "phrases": (
+            "月野しずくです。近所に住んでるゲーム好きのお姉さんみたいな立ち位置で、配信を横から見ています。対戦中は少しだけ口が悪くなることがあります。",
+        ),
+    },
+}
+STREAMER_REACTION_DEBUG_LOG = False
+
 # --- Game Mode ---
 GAME_MODE = "normal"  # "normal" or "battle"
 

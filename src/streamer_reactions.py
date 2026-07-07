@@ -3,6 +3,44 @@ import unicodedata
 from typing import Any, Dict, Iterable, Tuple
 
 
+DEFAULT_ADDRESS_STRONG_KEYWORDS = (
+    "しずく",
+    "雫",
+    "しづく",
+    "シズク",
+    "しずくちゃん",
+    "しーちゃん",
+)
+
+DEFAULT_ADDRESS_WEAK_KEYWORDS = (
+    "しず",
+    "シズ",
+    "しずこ",
+    "静岡",
+    "しずおか",
+    "しずか",
+    "続く",
+)
+
+DEFAULT_ADDRESS_CONTEXT_WORDS = (
+    "どう",
+    "今の",
+    "これ",
+    "見て",
+    "聞いて",
+    "思う",
+    "教えて",
+    "お願い",
+    "反応して",
+    "何",
+    "なんで",
+    "自己紹介",
+    "挨拶",
+    "説明",
+    "あなた誰",
+    "何者",
+)
+
 DEFAULT_STREAMER_UTTERANCE_KEYWORDS = {
     "short_noise": (
         "あー",
@@ -78,6 +116,23 @@ DEFAULT_STREAMER_FIXED_RESPONSE_PHRASES = {
 }
 
 
+DEFAULT_STREAMER_KEYWORD_FIXED_RESPONSES = {
+    "self_intro": {
+        "keywords": (
+            "自己紹介",
+            "初見さん",
+            "挨拶",
+            "あなた誰",
+            "何者",
+            "説明して",
+        ),
+        "phrases": (
+            "月野しずくです。近所に住んでるゲーム好きのお姉さんみたいな立ち位置で、配信を横から見ています。対戦中は少しだけ口が悪くなることがあります。",
+        ),
+    },
+}
+
+
 def normalize_streamer_text(text: str) -> str:
     if not text:
         return ""
@@ -90,6 +145,11 @@ def _get_mapping(cfg, name: str, default):
     return value or default
 
 
+def _get_sequence(cfg, name: str, default) -> Tuple[str, ...]:
+    value = getattr(cfg, name, None)
+    return tuple(value or default)
+
+
 def _contains_keyword(text: str, keywords: Iterable[str]) -> Tuple[str, ...]:
     matched = []
     for keyword in keywords:
@@ -99,37 +159,99 @@ def _contains_keyword(text: str, keywords: Iterable[str]) -> Tuple[str, ...]:
     return tuple(matched)
 
 
+def _first_keyword_match(text: str, keywords: Iterable[str]) -> str:
+    matched = _contains_keyword(text, keywords)
+    return matched[0] if matched else ""
+
+
+def _weak_context_match(normalized_text: str, context_words: Iterable[str]) -> str:
+    for context_word in context_words:
+        normalized_context = normalize_streamer_text(context_word)
+        if not normalized_context or normalized_context not in normalized_text:
+            continue
+        if normalized_context in {"思う", "おもう"}:
+            if "どう思" not in normalized_text and "どうおも" not in normalized_text:
+                continue
+        return str(context_word)
+    return ""
+
+
+def classify_address_match(normalized_text: str, cfg) -> Dict[str, Any]:
+    strong_keywords = list(_get_sequence(cfg, "shizuku_address_strong_keywords", DEFAULT_ADDRESS_STRONG_KEYWORDS))
+    for keyword in tuple(getattr(cfg, "shizuku_call_keywords", ()) or ()):  # backwards compatible
+        if keyword not in strong_keywords:
+            strong_keywords.append(keyword)
+
+    strong_match = _first_keyword_match(normalized_text, strong_keywords)
+    if strong_match:
+        return {
+            "address_match_type": "strong",
+            "matched_address_keyword": strong_match,
+            "matched_context_word": "",
+        }
+
+    weak_keywords = _get_sequence(cfg, "shizuku_address_weak_keywords", DEFAULT_ADDRESS_WEAK_KEYWORDS)
+    weak_match = _first_keyword_match(normalized_text, weak_keywords)
+    if weak_match:
+        context_words = _get_sequence(cfg, "shizuku_address_context_words", DEFAULT_ADDRESS_CONTEXT_WORDS)
+        context_match = _weak_context_match(normalized_text, context_words)
+        if context_match:
+            return {
+                "address_match_type": "weak_context",
+                "matched_address_keyword": weak_match,
+                "matched_context_word": context_match,
+            }
+
+    return {
+        "address_match_type": "none",
+        "matched_address_keyword": "",
+        "matched_context_word": "",
+    }
+
+
 def _contains_call_keyword(normalized_text: str, cfg) -> Tuple[str, ...]:
-    keywords = []
-    for keyword in tuple(getattr(cfg, "shizuku_call_keywords", ()) or ()):
-        if keyword not in keywords:
-            keywords.append(keyword)
-    for keyword in tuple(getattr(cfg, "streamer_force_reply_keywords", ()) or ()):
-        if keyword not in keywords:
-            keywords.append(keyword)
-    return _contains_keyword(normalized_text, keywords)
+    address_match = classify_address_match(normalized_text, cfg)
+    if address_match["address_match_type"] == "none":
+        return ()
+    return (address_match["matched_address_keyword"],)
 
 
 def classify_streamer_utterance(text: str, cfg) -> Dict[str, Any]:
     normalized = normalize_streamer_text(text)
+    base = {
+        "normalized_text": normalized,
+        "address_match_type": "none",
+        "matched_address_keyword": "",
+        "matched_context_word": "",
+    }
     if not normalized:
-        return {"utterance_type": "short_noise", "matched_keywords": (), "reason": "empty_text"}
+        return {**base, "utterance_type": "short_noise", "matched_keywords": (), "reason": "empty_text"}
 
-    call_matches = _contains_call_keyword(normalized, cfg)
-    if call_matches:
-        return {"utterance_type": "addressed", "matched_keywords": call_matches, "reason": "addressed"}
+    address_match = classify_address_match(normalized, cfg)
+    base.update(address_match)
+    if address_match["address_match_type"] != "none":
+        matched_keywords = (address_match["matched_address_keyword"],)
+        if address_match["matched_context_word"]:
+            matched_keywords += (address_match["matched_context_word"],)
+        return {
+            **base,
+            "utterance_type": "addressed",
+            "matched_keywords": matched_keywords,
+            "reason": "addressed",
+        }
 
     keywords_by_type = _get_mapping(cfg, "streamer_utterance_keywords", DEFAULT_STREAMER_UTTERANCE_KEYWORDS)
     for utterance_type in ("short_noise", "angry", "frustration", "close_call", "success"):
         matched = _contains_keyword(normalized, keywords_by_type.get(utterance_type, ()))
         if matched:
             return {
+                **base,
                 "utterance_type": utterance_type,
                 "matched_keywords": matched,
                 "reason": "keyword_match",
             }
 
-    return {"utterance_type": "generic", "matched_keywords": (), "reason": "no_keyword_match"}
+    return {**base, "utterance_type": "generic", "matched_keywords": (), "reason": "no_keyword_match"}
 
 
 def select_streamer_fixed_response(utterance_type: str, cfg) -> str:
@@ -144,22 +266,80 @@ def select_streamer_fixed_response(utterance_type: str, cfg) -> str:
     return random.choice(phrases) if phrases else ""
 
 
+def select_keyword_fixed_response(normalized_text: str, cfg) -> Dict[str, Any]:
+    if not bool(getattr(cfg, "streamer_keyword_fixed_response_enabled", True)):
+        return {"keyword_response_id": "", "phrase": "", "matched_keywords": (), "reason": "disabled"}
+
+    responses = _get_mapping(
+        cfg,
+        "streamer_keyword_fixed_responses",
+        DEFAULT_STREAMER_KEYWORD_FIXED_RESPONSES,
+    )
+    for response_id, spec in responses.items():
+        keywords = tuple((spec or {}).get("keywords", ()) or ())
+        matched = _contains_keyword(normalized_text, keywords)
+        if not matched:
+            continue
+        phrases = tuple(p for p in (spec or {}).get("phrases", ()) if p)
+        if not phrases:
+            return {
+                "keyword_response_id": str(response_id),
+                "phrase": "",
+                "matched_keywords": matched,
+                "reason": "no_phrase",
+            }
+        return {
+            "keyword_response_id": str(response_id),
+            "phrase": random.choice(phrases),
+            "matched_keywords": matched,
+            "reason": "keyword_match",
+        }
+
+    return {"keyword_response_id": "", "phrase": "", "matched_keywords": (), "reason": "no_keyword_match"}
+
+
 def _cooldown_remaining(now: float, last_time: float, cooldown_sec: float) -> float:
     return max(0.0, max(0.0, cooldown_sec) - (now - last_time))
+
+
+def _decision_base(classification: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "utterance_type": classification.get("utterance_type", "generic"),
+        "matched_keywords": classification.get("matched_keywords", ()),
+        "normalized_text": classification.get("normalized_text", ""),
+        "address_match_type": classification.get("address_match_type", "none"),
+        "matched_address_keyword": classification.get("matched_address_keyword", ""),
+        "matched_context_word": classification.get("matched_context_word", ""),
+        "keyword_response_id": "",
+        "llm_response_mode": "normal",
+    }
 
 
 def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any]:
     classification = classify_streamer_utterance(text, cfg)
     utterance_type = classification["utterance_type"]
     matched_keywords = classification["matched_keywords"]
+    base = _decision_base(classification)
 
     if utterance_type == "addressed":
+        keyword_response = select_keyword_fixed_response(classification.get("normalized_text", ""), cfg)
+        if keyword_response["phrase"]:
+            return {
+                **base,
+                "action": "keyword_fixed_phrase",
+                "phrase": keyword_response["phrase"],
+                "reason": "keyword_fixed_response",
+                "matched_keywords": matched_keywords + tuple(keyword_response.get("matched_keywords", ())),
+                "keyword_response_id": keyword_response["keyword_response_id"],
+                "cooldown_remaining": 0.0,
+            }
         return {
-            "action": "llm",
-            "utterance_type": utterance_type,
+            **base,
+            "action": "llm_address",
             "phrase": "",
             "reason": "addressed",
             "matched_keywords": matched_keywords,
+            "llm_response_mode": "address_long",
             "cooldown_remaining": 0.0,
         }
 
@@ -170,8 +350,8 @@ def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any
     )
     if ai_remaining > 0:
         return {
+            **base,
             "action": "skip",
-            "utterance_type": utterance_type,
             "phrase": "",
             "reason": "ai_speech_cooldown",
             "matched_keywords": matched_keywords,
@@ -180,8 +360,8 @@ def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any
 
     if utterance_type == "short_noise" and bool(getattr(cfg, "streamer_short_noise_skip", True)):
         return {
+            **base,
             "action": "skip",
-            "utterance_type": utterance_type,
             "phrase": "",
             "reason": "short_noise",
             "matched_keywords": matched_keywords,
@@ -194,8 +374,8 @@ def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any
 
     if utterance_type == "generic" and random.random() > probability:
         return {
+            **base,
             "action": "skip",
-            "utterance_type": utterance_type,
             "phrase": "",
             "reason": "probability",
             "matched_keywords": matched_keywords,
@@ -212,8 +392,8 @@ def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any
         )
         if fixed_remaining > 0:
             return {
+                **base,
                 "action": "skip",
-                "utterance_type": utterance_type,
                 "phrase": "",
                 "reason": "fixed_response_cooldown",
                 "matched_keywords": matched_keywords,
@@ -222,8 +402,8 @@ def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any
         phrase = select_streamer_fixed_response(utterance_type, cfg)
         if phrase:
             return {
+                **base,
                 "action": "fixed_phrase",
-                "utterance_type": utterance_type,
                 "phrase": phrase,
                 "reason": "emotion_match" if utterance_type in fixed_types else "generic_fixed",
                 "matched_keywords": matched_keywords,
@@ -232,8 +412,8 @@ def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any
 
     if bool(getattr(cfg, "streamer_llm_on_address_only", True)):
         return {
+            **base,
             "action": "skip",
-            "utterance_type": utterance_type,
             "phrase": "",
             "reason": "llm_address_only",
             "matched_keywords": matched_keywords,
@@ -242,8 +422,8 @@ def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any
 
     if utterance_type != "generic" and random.random() > probability:
         return {
+            **base,
             "action": "skip",
-            "utterance_type": utterance_type,
             "phrase": "",
             "reason": "probability",
             "matched_keywords": matched_keywords,
@@ -251,8 +431,8 @@ def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any
         }
 
     return {
+        **base,
         "action": "llm",
-        "utterance_type": utterance_type,
         "phrase": "",
         "reason": "fallback_llm",
         "matched_keywords": matched_keywords,
