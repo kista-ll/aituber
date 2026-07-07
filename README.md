@@ -140,6 +140,9 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | `SCREEN_CAPTURE_WIDTH` / `SCREEN_CAPTURE_HEIGHT` | `640` / `360` | 判定用に縮小するサイズです。 |
 | `SCREEN_CAPTURE_REGION` | `None` | 指定モニター内の一部だけを見る場合に `(left, top, width, height)` で指定します。 |
 | `SCREEN_EVENT_DEBUG_LOG` | `False` | 検出スコアや処理時間の詳細ログを出します。 |
+| `SCREEN_EVENT_DEBUG_DIR` | `"debug/screen_event"` | 画面イベントdebug画像の保存先です。 |
+| `SCREEN_EVENT_SAVE_DEBUG_FRAMES` | `False` | full frame、ROI crop、overlay、metricsを保存します。通常配信では `False` にします。 |
+| `SCREEN_EVENT_SAVE_ROI_CROPS` | `True` | debug保存時にdeath/text ROI cropも保存します。 |
 | `SCREEN_EVENT_LOG_EVERY_SEC` | `10.0` | debug無効時の低スコアログ間隔です。 |
 | `OBS_VIRTUAL_CAMERA_INDEX` | `0` | OBS Virtual Cameraを読むOpenCVカメラ番号です。 |
 | `OBS_VIRTUAL_CAMERA_WIDTH` / `HEIGHT` | `1920` / `1080` | OBS Virtual Cameraへ要求する解像度です。 |
@@ -153,6 +156,11 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | `DEATH_EVENT_ROI` | `(0.32, 0.21, 0.67, 0.54)` | 死亡表示全体を見る正規化cropです。 |
 | `DEATH_EVENT_TEXT_ROI` | `(0.42, 0.33, 0.59, 0.46)` | `やられた!` 付近を見る正規化cropです。 |
 | `DEATH_EVENT_TEMPLATE_PATH` | `"assets/templates/splatoon_death_yarareta.png"` | 死亡表示テンプレート画像です。 |
+| `DEATH_EVENT_ROI_OBS` | `None` | OBS Virtual Camera入力時だけ死亡表示ROIを上書きします。 |
+| `DEATH_EVENT_TEXT_ROI_OBS` | `None` | OBS Virtual Camera入力時だけ `やられた!` ROIを上書きします。 |
+| `DEATH_EVENT_TEMPLATE_PATH_OBS` | `""` | OBS Virtual Camera入力時だけテンプレート画像を差し替えます。 |
+| `DEATH_EVENT_MIN_TEMPLATE_SCORE_OBS` | `None` | OBS Virtual Camera入力時だけ主判定しきい値を上書きします。まずは変更しないでください。 |
+| `DEATH_EVENT_SHAPE_MIN_TEMPLATE_SCORE_OBS` | `None` | OBS Virtual Camera入力時だけ補助判定しきい値を上書きします。まずは変更しないでください。 |
 | `DEATH_EVENT_OCR_ROI` | `(0.34, 0.25, 0.66, 0.48)` | OCR対象の正規化cropです。死亡表示周辺だけを読みます。 |
 | `DEATH_EVENT_OCR_LANG` | `"jpn+eng"` | TesseractのOCR言語です。日本語データが必要です。 |
 | `DEATH_EVENT_OCR_CONFIG` | `"--psm 6"` | Tesseractのページ分割設定です。 |
@@ -343,7 +351,7 @@ OBS Virtual Cameraを使うと、ディスプレイ全画面表示に依存せ�
 ```python
 SCREEN_EVENT_ENABLED = True
 SCREEN_FRAME_SOURCE = "obs_virtual_camera"
-OBS_VIRTUAL_CAMERA_INDEX = 0
+OBS_VIRTUAL_CAMERA_INDEX = 2
 OBS_VIRTUAL_CAMERA_WIDTH = 1920
 OBS_VIRTUAL_CAMERA_HEIGHT = 1080
 OBS_VIRTUAL_CAMERA_FPS = 30
@@ -363,6 +371,20 @@ python src\screen_event_detector.py --frame-source obs_virtual_camera --capture-
 python src\screen_event_detector.py --frame-source obs_virtual_camera --capture-once --detect
 ```
 
+検出しにくい場合は、ROI枠付き画像とスコアを保存して確認します。
+
+```bash
+python src\screen_event_detector.py --frame-source obs_virtual_camera --capture-once --detect --print-detection-metrics --save-debug-frames --debug-dir debug\obs_detect
+```
+
+保存される主なファイル:
+
+- `*_full.png`: OBS Virtual Cameraから取得し、判定サイズへそろえたフレーム
+- `*_overlay.png`: death ROIとtext ROIを重ねた確認用画像
+- `*_death_roi.png`: 死亡表示全体のcrop
+- `*_text_roi.png`: `やられた!` 付近のcrop
+- `*_metrics.json`: ROI座標と検出スコア
+
 カメラ番号を変えて確認:
 
 ```bash
@@ -377,7 +399,10 @@ OBS Virtual Cameraを選んで開けない場合、MSSへ自動fallbackしませ
 - 黒画面になる: OBSのシーン、ソース表示、Virtual Camera開始状態を確認します。
 - 別カメラを読んでいる: `--camera-index` を変え、`--save-frame` で保存画像を確認します。
 - 解像度が想定と違う: 起動ログのactual width/heightを確認し、OBSキャンバスやVirtual Camera設定を見直します。
-- 検出しない: 保存フレームにゲーム画面が想定位置・比率で入っているか確認します。
+- 検出しない: `*_overlay.png` で死亡表示がROI内に入っているか確認します。ズレている場合は `DEATH_EVENT_ROI_OBS` と `DEATH_EVENT_TEXT_ROI_OBS` を調整します。
+- ROIは合っているのに `template_score` が低い: OBS経由の映像から `やられた!` 部分を切り出し、`assets/templates/splatoon_death_yarareta_obs.png` を作成して `DEATH_EVENT_TEMPLATE_PATH_OBS` に指定します。
+- `dark_ratio` や `white_ratio` がMSS時と大きく違う: OBSキャンバス内に黒帯、余白、縮小されたゲーム映像が入っていないか確認します。
+- しきい値調整は最後に行います。単純に緩めるとリザルト、ロビー、復活画面の誤検知が増えるため、まずROIとOBS用テンプレートを合わせます。
 
 将来の候補:
 
