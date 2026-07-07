@@ -504,6 +504,7 @@ def format_detection_metrics(result: DeathDetectionResult) -> str:
 
 
 def detection_debug_regions(image: np.ndarray, cfg) -> dict:
+    original_height, original_width = image.shape[:2]
     resized = _resize_for_detection(image, cfg)
     height, width = resized.shape[:2]
     death_roi = effective_death_roi(cfg)
@@ -514,6 +515,8 @@ def detection_debug_regions(image: np.ndarray, cfg) -> dict:
     tx1, ty1, tx2, ty2 = text_box
     return {
         "frame": resized,
+        "original_width": original_width,
+        "original_height": original_height,
         "frame_width": width,
         "frame_height": height,
         "death_roi": death_roi,
@@ -541,6 +544,12 @@ def save_detection_debug_frames(
     result: Optional[DeathDetectionResult] = None,
     output_dir: Optional[str] = None,
     save_roi_crops: bool = True,
+    event_label: str = "",
+    metrics_extra: Optional[dict] = None,
+    save_full: bool = True,
+    save_overlay: bool = True,
+    save_roi: Optional[bool] = None,
+    save_metrics: bool = True,
 ) -> Path:
     if cv2 is None:
         raise RuntimeError("cv2_unavailable")
@@ -551,29 +560,43 @@ def save_detection_debug_frames(
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     source = _safe_name(str(source_name or _frame_source_name(cfg) or "screen"))
-    prefix = f"{source}_{timestamp}"
+    label = _safe_name(str(event_label or "").strip())
+    prefix = f"{timestamp}_{source}"
+    if label:
+        prefix = f"{prefix}_{label}"
     regions = detection_debug_regions(image, cfg)
     frame = regions["frame"]
+    should_save_roi = save_roi_crops if save_roi is None else save_roi
 
     full_path = base_dir / f"{prefix}_full.png"
     overlay_path = base_dir / f"{prefix}_overlay.png"
-    cv2.imwrite(str(full_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    if save_full:
+        cv2.imwrite(str(full_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
-    overlay = frame.copy()
-    dx1, dy1, dx2, dy2 = regions["death_box"]
-    tx1, ty1, tx2, ty2 = regions["text_box"]
-    cv2.rectangle(overlay, (dx1, dy1), (dx2, dy2), (0, 255, 0), 2)
-    cv2.rectangle(overlay, (tx1, ty1), (tx2, ty2), (255, 0, 0), 2)
-    cv2.imwrite(str(overlay_path), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+    if save_overlay:
+        overlay = frame.copy()
+        dx1, dy1, dx2, dy2 = regions["death_box"]
+        tx1, ty1, tx2, ty2 = regions["text_box"]
+        cv2.rectangle(overlay, (dx1, dy1), (dx2, dy2), (0, 255, 0), 2)
+        cv2.rectangle(overlay, (tx1, ty1), (tx2, ty2), (255, 0, 0), 2)
+        cv2.imwrite(str(overlay_path), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
 
-    if save_roi_crops:
+    if should_save_roi:
         cv2.imwrite(str(base_dir / f"{prefix}_death_roi.png"), cv2.cvtColor(regions["death_crop"], cv2.COLOR_RGB2BGR))
         cv2.imwrite(str(base_dir / f"{prefix}_text_roi.png"), cv2.cvtColor(regions["text_crop"], cv2.COLOR_RGB2BGR))
 
     metrics = {
+        "timestamp": timestamp,
         "source": str(source_name or _frame_source_name(cfg) or "screen"),
+        "frame_source": _frame_source_name(cfg),
+        "original_width": regions["original_width"],
+        "original_height": regions["original_height"],
+        "resized_width": regions["frame_width"],
+        "resized_height": regions["frame_height"],
         "frame_width": regions["frame_width"],
         "frame_height": regions["frame_height"],
+        "effective_death_roi": list(regions["death_roi"]),
+        "effective_text_roi": list(regions["text_roi"]),
         "death_roi": list(regions["death_roi"]),
         "death_box": list(regions["death_box"]),
         "text_roi": list(regions["text_roi"]),
@@ -584,8 +607,11 @@ def save_detection_debug_frames(
     if result is not None:
         metrics.update({
             "detected": result.detected,
+            "raw_detected": result.detected,
             "reason": result.reason,
+            "detection_reason": result.reason,
             "final_score": result.final_score,
+            "confidence": result.final_score,
             "template_score": result.template_score,
             "shape_score": result.shape_score,
             "dark_ratio": result.dark_ratio,
@@ -594,10 +620,28 @@ def save_detection_debug_frames(
             "rows_with_white": result.rows_with_white,
             "log_confidence": result.log_confidence,
         })
-    with (base_dir / f"{prefix}_metrics.json").open("w", encoding="utf-8") as f:
-        json.dump(metrics, f, ensure_ascii=False, indent=2)
+    if metrics_extra:
+        metrics.update(metrics_extra)
+    if save_metrics:
+        with (base_dir / f"{prefix}_metrics.json").open("w", encoding="utf-8") as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2)
 
     return base_dir
+
+
+def prune_debug_files(directory: Path, max_files: int) -> None:
+    if max_files <= 0 or not directory.exists():
+        return
+    suffixes = ("_full.png", "_overlay.png", "_death_roi.png", "_text_roi.png", "_metrics.json")
+    files = [path for path in directory.iterdir() if path.is_file() and path.name.endswith(suffixes)]
+    excess = len(files) - max_files
+    if excess <= 0:
+        return
+    for path in sorted(files, key=lambda item: item.stat().st_mtime)[:excess]:
+        try:
+            path.unlink()
+        except OSError as e:
+            print(f"[SCREEN] debug prune skip path={path} error={e}", flush=True)
 
 
 def _ocr_enabled(cfg) -> bool:
@@ -814,6 +858,15 @@ class ScreenEventDetector:
         save_debug_frames = bool(getattr(self.cfg, "screen_event_save_debug_frames", False))
         save_roi_crops = bool(getattr(self.cfg, "screen_event_save_roi_crops", True))
         debug_dir = str(getattr(self.cfg, "screen_event_debug_dir", "debug/screen_event") or "debug/screen_event")
+        save_detected_frames = bool(getattr(self.cfg, "screen_event_save_detected_frames", False))
+        detected_frame_dir = str(
+            getattr(self.cfg, "screen_event_detected_frame_dir", "debug/screen_events") or "debug/screen_events"
+        )
+        save_detected_full = bool(getattr(self.cfg, "screen_event_save_detected_full_frame", True))
+        save_detected_overlay = bool(getattr(self.cfg, "screen_event_save_detected_overlay", True))
+        save_detected_roi = bool(getattr(self.cfg, "screen_event_save_detected_roi", True))
+        save_detected_metrics = bool(getattr(self.cfg, "screen_event_save_detected_metrics", True))
+        max_debug_files = int(getattr(self.cfg, "screen_event_max_debug_files", 200))
         try:
             if self.frame_source is None:
                 self.frame_source = create_frame_source(self.cfg)
@@ -838,11 +891,35 @@ class ScreenEventDetector:
                         )
 
                     if result.detected:
+                        cooldown_remaining = max(0.0, cooldown - (now - self.last_emit_time))
+                        cooldown_active = cooldown_remaining > 0.0
+                        emitted = not cooldown_active
+                        if save_detected_frames:
+                            saved_dir = save_detection_debug_frames(
+                                _frame_source_name(self.cfg),
+                                image,
+                                self.cfg,
+                                result,
+                                detected_frame_dir,
+                                save_detected_roi,
+                                event_label="raw_detected",
+                                metrics_extra={
+                                    "emitted": emitted,
+                                    "screen_event_cooldown_active": cooldown_active,
+                                    "screen_event_cooldown_remaining": cooldown_remaining,
+                                    "reaction_source": None,
+                                },
+                                save_full=save_detected_full,
+                                save_overlay=save_detected_overlay,
+                                save_roi=save_detected_roi,
+                                save_metrics=save_detected_metrics,
+                            )
+                            prune_debug_files(saved_dir, max_debug_files)
                         if save_debug_frames:
                             save_detection_debug_frames(
                                 _frame_source_name(self.cfg), image, self.cfg, result, debug_dir, save_roi_crops
                             )
-                        if now - self.last_emit_time < cooldown:
+                        if cooldown_active:
                             print("[SCREEN] skip reason=cooldown", flush=True)
                         else:
                             ocr_result = self.detector.ocr(image)

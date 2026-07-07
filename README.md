@@ -143,6 +143,13 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | `SCREEN_EVENT_DEBUG_DIR` | `"debug/screen_event"` | 画面イベントdebug画像の保存先です。 |
 | `SCREEN_EVENT_SAVE_DEBUG_FRAMES` | `False` | full frame、ROI crop、overlay、metricsを保存します。通常配信では `False` にします。 |
 | `SCREEN_EVENT_SAVE_ROI_CROPS` | `True` | debug保存時にdeath/text ROI cropも保存します。 |
+| `SCREEN_EVENT_SAVE_DETECTED_FRAMES` | `False` | raw検出が `detected=True` になった瞬間のフレームを保存します。テスト配信用です。 |
+| `SCREEN_EVENT_DETECTED_FRAME_DIR` | `"debug/screen_events"` | raw検出フレームの保存先です。 |
+| `SCREEN_EVENT_SAVE_DETECTED_FULL_FRAME` | `True` | raw検出保存時にfull frameを保存します。 |
+| `SCREEN_EVENT_SAVE_DETECTED_OVERLAY` | `True` | raw検出保存時にROI overlayを保存します。 |
+| `SCREEN_EVENT_SAVE_DETECTED_ROI` | `True` | raw検出保存時にdeath/text ROI cropを保存します。 |
+| `SCREEN_EVENT_SAVE_DETECTED_METRICS` | `True` | raw検出保存時にmetrics jsonを保存します。 |
+| `SCREEN_EVENT_MAX_DEBUG_FILES` | `200` | debugファイルの最大数です。超過時は古いファイルから削除します。 |
 | `SCREEN_EVENT_LOG_EVERY_SEC` | `10.0` | debug無効時の低スコアログ間隔です。 |
 | `OBS_VIRTUAL_CAMERA_INDEX` | `0` | OBS Virtual Cameraを読むOpenCVカメラ番号です。 |
 | `OBS_VIRTUAL_CAMERA_WIDTH` / `HEIGHT` | `1920` / `1080` | OBS Virtual Cameraへ要求する解像度です。 |
@@ -403,6 +410,37 @@ OBS Virtual Cameraを選んで開けない場合、MSSへ自動fallbackしませ
 - ROIは合っているのに `template_score` が低い: OBS経由の映像から `やられた!` 部分を切り出し、`assets/templates/splatoon_death_yarareta_obs.png` を作成して `DEATH_EVENT_TEMPLATE_PATH_OBS` に指定します。
 - `dark_ratio` や `white_ratio` がMSS時と大きく違う: OBSキャンバス内に黒帯、余白、縮小されたゲーム映像が入っていないか確認します。
 - しきい値調整は最後に行います。単純に緩めるとリザルト、ロビー、復活画面の誤検知が増えるため、まずROIとOBS用テンプレートを合わせます。
+
+### テスト配信中の誤検知確認
+
+テスト配信中に死亡判定が誤検知した場合、raw検出された瞬間のフレームを保存できます。発話されたイベントだけでなく、screen event側のcooldownで発話されなかったraw検出も保存対象です。
+
+```python
+SCREEN_EVENT_SAVE_DETECTED_FRAMES = True
+SCREEN_EVENT_DETECTED_FRAME_DIR = "debug/screen_events"
+SCREEN_EVENT_MAX_DEBUG_FILES = 200
+```
+
+通常配信ではdebugファイルが増えるため `False` 推奨です。保存される主なファイルは `*_full.png`, `*_overlay.png`, `*_death_roi.png`, `*_text_roi.png`, `*_metrics.json` です。`*_overlay.png` では緑枠がdeath ROI、赤枠がtext ROIです。
+
+`metrics.json` では以下を確認します。
+
+- `template_score`
+- `dark_ratio`
+- `white_ratio`
+- `confidence`
+- `detection_reason`
+- `screen_event_cooldown_active`
+- `screen_event_cooldown_remaining`
+- `emitted`
+
+誤検知時の確認順:
+
+1. `*_full.png` で入力元が正しいか確認します。
+2. `*_overlay.png` でROI位置を確認します。
+3. ROIがズレていれば `DEATH_EVENT_ROI_OBS` / `DEATH_EVENT_TEXT_ROI_OBS` を調整します。
+4. ROIが合っていて `template_score` が低ければOBS専用テンプレートを作成します。
+5. 最後にしきい値調整を検討します。
 
 将来の候補:
 
