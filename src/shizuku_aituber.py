@@ -6,11 +6,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import copy
 import io
 import time
 import queue
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List
 
 import numpy as np
@@ -259,7 +260,7 @@ class Config:
     llm_address_response_max_sentences: int = LLM_ADDRESS_RESPONSE_MAX_SENTENCES
     llm_address_response_style: str = LLM_ADDRESS_RESPONSE_STYLE
     streamer_keyword_fixed_response_enabled: bool = STREAMER_KEYWORD_FIXED_RESPONSE_ENABLED
-    streamer_keyword_fixed_responses: Optional[dict] = STREAMER_KEYWORD_FIXED_RESPONSES
+    streamer_keyword_fixed_responses: Optional[dict] = field(default_factory=lambda: copy.deepcopy(STREAMER_KEYWORD_FIXED_RESPONSES))
     streamer_reaction_debug_log: bool = STREAMER_REACTION_DEBUG_LOG
 
     twitch_comment_enabled: bool = TWITCH_COMMENT_ENABLED
