@@ -95,6 +95,11 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | `STREAMER_KEYWORD_FIXED_RESPONSE_ENABLED` | `True` | 自己紹介などの定型キーワード固定応答を有効にします。 |
 | `STREAMER_KEYWORD_FIXED_RESPONSES` | `{"self_intro": ...}` | 定型キーワードと固定文を設定します。 |
 | `STREAMER_REACTION_DEBUG_LOG` | `False` | 呼びかけ判定や固定応答選択の詳細ログを出します。 |
+| `CHARACTER_BREAK_ENABLED` | `False` | Phase7の低頻度キャラ崩壊モードを有効にします。通常配信ではOFF推奨です。 |
+| `CHARACTER_BREAK_RATE` | `0.02` | battle中の固定文応答時にキャラ崩壊モードへ入る確率です。 |
+| `CHARACTER_BREAK_DURATION_SEC` | `20.0` | キャラ崩壊モードの継続秒数です。 |
+| `CHARACTER_BREAK_COOLDOWN_SEC` | `300.0` | キャラ崩壊モード再発動までの最短間隔です。 |
+| `CHARACTER_BREAK_FIXED_RESPONSE_PHRASES` | `None` | `None` の場合は標準の安全な固定文セットを使います。 |
 
 配信者発話の分類:
 
@@ -138,7 +143,9 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 5. 画面イベント固定文
 6. 無音リアクション
 
-Phase7の低頻度キャラ崩壊モードは将来拡張です。入れる場合も既定OFF、battleモード中だけ、固定文の口調セットを短時間だけ切り替える方針にします。LLMに自由に暴走させず、配信者や視聴者への攻撃、差別、下品、暴力肯定は禁止します。
+Phase7の低頻度キャラ崩壊モードは実装済みですが、既定ではOFFです。`CHARACTER_BREAK_ENABLED = True` かつ `GAME_MODE = "battle"` の時だけ、配信者の感情発話に対する固定文の口調セットが低確率で短時間だけ切り替わります。LLMには使わず、Twitchコメント、しずく呼びかけ、画面イベント、無音リアクションには影響しません。
+
+キャラ崩壊モードは、配信テンポ用の短い固定文だけを少し崩す機能です。配信者や視聴者への攻撃、差別、下品、暴力肯定は入れない方針です。調整する場合は `CHARACTER_BREAK_FIXED_RESPONSE_PHRASES` を使い、1文・短文の範囲に収めてください。
 
 ## Twitchコメント優先
 
@@ -224,6 +231,16 @@ Phase7の低頻度キャラ崩壊モードは将来拡張です。入れる場�
 | `DEATH_EVENT_USE_CONTEXT_REACTIONS` | `True` | OCRに依存しない死亡状況別固定文を選びます。標準のPhase3動作です。 |
 | `DEATH_EVENT_USE_WEAPON_CATEGORY_REACTIONS` | `False` | OCR結果から武器カテゴリ分岐を試す実験機能です。通常はOFFにします。 |
 | `DEATH_EVENT_OCR_CATEGORY_MIN_CONFIDENCE` | `60.0` | 武器カテゴリ推定に使う最低OCR confidenceです。低い場合は `unknown` にします。 |
+| `DEATH_EVENT_WEAPON_MATCH_ENABLED` | `False` | OCR代替の武器名テンプレート比較を有効にします。まずはCSV/debug検証用です。 |
+| `DEATH_EVENT_WEAPON_TEMPLATE_DIR` | `"assets/templates/weapons"` | 武器名テンプレート画像の置き場です。 |
+| `DEATH_EVENT_WEAPON_TEMPLATE_METADATA_PATH` | `"assets/templates/weapons/weapons.json"` | 武器テンプレートの `id`, 表示名, カテゴリ, 画像パスを持つJSONです。 |
+| `DEATH_EVENT_WEAPON_NAME_ROI` | `None` | 武器名表示だけを切り出すROIです。未設定なら比較せず `roi_unavailable` になります。 |
+| `DEATH_EVENT_WEAPON_NAME_ROI_OBS` | `None` | OBS入力時だけ武器名ROIを上書きします。 |
+| `DEATH_EVENT_WEAPON_PREPROCESS_MODE` | `"sharpen_threshold"` | 武器名cropとテンプレートに共通でかける前処理です。 |
+| `DEATH_EVENT_WEAPON_MIN_SCORE` | `0.80` | 武器名テンプレートを採用する最低スコアです。 |
+| `DEATH_EVENT_WEAPON_MIN_SCORE_OBS` | `None` | OBS入力時だけ最低スコアを上書きします。 |
+| `DEATH_EVENT_WEAPON_MIN_MARGIN` | `0.08` | bestとsecond bestの差がこれ未満なら `unknown` にします。 |
+| `DEATH_EVENT_USE_WEAPON_TEMPLATE_REACTIONS` | `False` | 後続Phase用です。現時点ではテンプレート結果を発話に接続しません。 |
 | `DEATH_EVENT_CATEGORY_DEBUG_LOG` | `False` | カテゴリ推定の詳細ログを出します。 |
 | `DEATH_EVENT_WEAPON_KEYWORDS` | `None` | 武器カテゴリ分岐をONにした場合だけ使います。 |
 | `DEATH_EVENT_REACTIONS_BY_CATEGORY` | `None` | `None` の場合は標準の死亡状況別固定文を使います。 |
@@ -373,6 +390,57 @@ OCRによる武器カテゴリ分岐は実験機能です。現時点ではOCR�
 - `category_reason`
 
 `unknown` の低頻度LLM利用は将来拡張です。`DEATH_EVENT_UNKNOWN_USE_LLM` はデフォルト `False` で、Phase 3ではLLMを呼びません。
+
+### 武器名テンプレート比較（実験機能）
+
+OCRで武器名を読む代わりに、死亡表示内の武器名ROIを切り出し、既知の武器名テンプレート画像と比較できます。これは任意文字列OCRではなく、既知候補から選ぶ画像分類として扱います。既定では `DEATH_EVENT_WEAPON_MATCH_ENABLED = False` で、ONにしても発話内容には使いません。まずはCSVとdebug画像で精度を確認してください。
+
+テンプレートは `assets/templates/weapons/weapons.json` で管理します。
+
+```json
+[
+  {
+    "id": "hot_blaster",
+    "display_name": "ホットブラスター",
+    "category": "blaster",
+    "template_path": "assets/templates/weapons/hot_blaster.png"
+  }
+]
+```
+
+武器名ROIが未設定の場合は `roi_unavailable` になり、比較はskipされます。OBS入力でROIがズレる場合は `DEATH_EVENT_WEAPON_NAME_ROI_OBS` を設定します。
+
+```python
+DEATH_EVENT_WEAPON_MATCH_ENABLED = True
+DEATH_EVENT_WEAPON_NAME_ROI = (0.40, 0.30, 0.62, 0.45)
+DEATH_EVENT_WEAPON_NAME_ROI_OBS = None
+```
+
+テンプレート作成用に武器名cropだけを保存できます。
+
+```powershell
+python src\screen_event_detector.py E:\capture\death_03.png --extract-weapon-crop --weapon-roi 0.40,0.30,0.62,0.45 --weapon-debug-dir debug\weapon_match
+```
+
+単体画像で比較する場合:
+
+```powershell
+python src\screen_event_detector.py E:\capture\death_03.png --detect --weapon-template-match --weapon-roi 0.40,0.30,0.62,0.45 --save-weapon-debug
+```
+
+静止画サンプルをCSV評価する場合:
+
+```powershell
+python tools\evaluate_screen_events.py --samples assets\screen_samples --weapon-template-match --weapon-roi 0.40,0.30,0.62,0.45 --save-weapon-debug --csv screen_event_weapon_eval.csv
+```
+
+動画をCSV評価する場合:
+
+```powershell
+python tools\evaluate_screen_event_video.py C:\Users\y-aka\Videos\splatoon_battle_02.mp4 --compare 0.25 --weapon-template-match --weapon-roi 0.40,0.30,0.62,0.45 --csv screen_event_video_weapon_eval.csv
+```
+
+CSVでは `weapon_best_score`, `weapon_match_margin`, `weapon_match_reason`, `weapon_id`, `weapon_display_name`, `weapon_template_category` を確認します。`best_score` が高くても `margin` が小さい場合は似たテンプレートと迷っているため `unknown` 扱いにします。発話に接続する場合は後続Phaseで `DEATH_EVENT_USE_WEAPON_TEMPLATE_REACTIONS=True` を検討しますが、十分に高信頼な結果だけを使ってください。
 
 ### 入力取得の設計メモ
 

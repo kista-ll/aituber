@@ -123,6 +123,11 @@ STREAMER_KEYWORD_FIXED_RESPONSES = config_value(
     },
 )
 STREAMER_REACTION_DEBUG_LOG = config_value("STREAMER_REACTION_DEBUG_LOG", False)
+CHARACTER_BREAK_ENABLED = config_value("CHARACTER_BREAK_ENABLED", False)
+CHARACTER_BREAK_RATE = config_value("CHARACTER_BREAK_RATE", 0.02)
+CHARACTER_BREAK_DURATION_SEC = config_value("CHARACTER_BREAK_DURATION_SEC", 20.0)
+CHARACTER_BREAK_COOLDOWN_SEC = config_value("CHARACTER_BREAK_COOLDOWN_SEC", 300.0)
+CHARACTER_BREAK_FIXED_RESPONSE_PHRASES = config_value("CHARACTER_BREAK_FIXED_RESPONSE_PHRASES", None)
 
 TWITCH_COMMENT_ENABLED = config_value("TWITCH_COMMENT_ENABLED", False)
 TWITCH_COMMENT_PRIORITY = config_value("TWITCH_COMMENT_PRIORITY", True)
@@ -197,6 +202,18 @@ DEATH_EVENT_REACTIONS_BY_CATEGORY = config_value("DEATH_EVENT_REACTIONS_BY_CATEG
 DEATH_EVENT_UNKNOWN_USE_LLM = config_value("DEATH_EVENT_UNKNOWN_USE_LLM", False)
 DEATH_EVENT_UNKNOWN_LLM_RATE = config_value("DEATH_EVENT_UNKNOWN_LLM_RATE", 0.2)
 DEATH_EVENT_UNKNOWN_LLM_COOLDOWN_SEC = config_value("DEATH_EVENT_UNKNOWN_LLM_COOLDOWN_SEC", 60.0)
+DEATH_EVENT_WEAPON_MATCH_ENABLED = config_value("DEATH_EVENT_WEAPON_MATCH_ENABLED", False)
+DEATH_EVENT_WEAPON_TEMPLATE_DIR = config_value("DEATH_EVENT_WEAPON_TEMPLATE_DIR", "assets/templates/weapons")
+DEATH_EVENT_WEAPON_TEMPLATE_METADATA_PATH = config_value(
+    "DEATH_EVENT_WEAPON_TEMPLATE_METADATA_PATH", "assets/templates/weapons/weapons.json"
+)
+DEATH_EVENT_WEAPON_NAME_ROI = config_value("DEATH_EVENT_WEAPON_NAME_ROI", None)
+DEATH_EVENT_WEAPON_NAME_ROI_OBS = config_value("DEATH_EVENT_WEAPON_NAME_ROI_OBS", None)
+DEATH_EVENT_WEAPON_PREPROCESS_MODE = config_value("DEATH_EVENT_WEAPON_PREPROCESS_MODE", "sharpen_threshold")
+DEATH_EVENT_WEAPON_MIN_SCORE = config_value("DEATH_EVENT_WEAPON_MIN_SCORE", 0.80)
+DEATH_EVENT_WEAPON_MIN_SCORE_OBS = config_value("DEATH_EVENT_WEAPON_MIN_SCORE_OBS", None)
+DEATH_EVENT_WEAPON_MIN_MARGIN = config_value("DEATH_EVENT_WEAPON_MIN_MARGIN", 0.08)
+DEATH_EVENT_USE_WEAPON_TEMPLATE_REACTIONS = config_value("DEATH_EVENT_USE_WEAPON_TEMPLATE_REACTIONS", False)
 DEATH_EVENT_REACTION_PHRASES = config_value(
     "DEATH_EVENT_REACTION_PHRASES",
     ("今のはきついですね。", "これは悔しいですね。", "相手、やってますね。", "今の詰め方は強いですね。", "それは声出ますね。"),
@@ -262,6 +279,11 @@ class Config:
     streamer_keyword_fixed_response_enabled: bool = STREAMER_KEYWORD_FIXED_RESPONSE_ENABLED
     streamer_keyword_fixed_responses: Optional[dict] = field(default_factory=lambda: copy.deepcopy(STREAMER_KEYWORD_FIXED_RESPONSES))
     streamer_reaction_debug_log: bool = STREAMER_REACTION_DEBUG_LOG
+    character_break_enabled: bool = CHARACTER_BREAK_ENABLED
+    character_break_rate: float = CHARACTER_BREAK_RATE
+    character_break_duration_sec: float = CHARACTER_BREAK_DURATION_SEC
+    character_break_cooldown_sec: float = CHARACTER_BREAK_COOLDOWN_SEC
+    character_break_fixed_response_phrases: Optional[dict] = field(default_factory=lambda: copy.deepcopy(CHARACTER_BREAK_FIXED_RESPONSE_PHRASES))
 
     twitch_comment_enabled: bool = TWITCH_COMMENT_ENABLED
     twitch_comment_priority: bool = TWITCH_COMMENT_PRIORITY
@@ -333,6 +355,16 @@ class Config:
     death_event_unknown_use_llm: bool = DEATH_EVENT_UNKNOWN_USE_LLM
     death_event_unknown_llm_rate: float = DEATH_EVENT_UNKNOWN_LLM_RATE
     death_event_unknown_llm_cooldown_sec: float = DEATH_EVENT_UNKNOWN_LLM_COOLDOWN_SEC
+    death_event_weapon_match_enabled: bool = DEATH_EVENT_WEAPON_MATCH_ENABLED
+    death_event_weapon_template_dir: str = DEATH_EVENT_WEAPON_TEMPLATE_DIR
+    death_event_weapon_template_metadata_path: str = DEATH_EVENT_WEAPON_TEMPLATE_METADATA_PATH
+    death_event_weapon_name_roi: Optional[tuple] = DEATH_EVENT_WEAPON_NAME_ROI
+    death_event_weapon_name_roi_obs: Optional[tuple] = DEATH_EVENT_WEAPON_NAME_ROI_OBS
+    death_event_weapon_preprocess_mode: str = DEATH_EVENT_WEAPON_PREPROCESS_MODE
+    death_event_weapon_min_score: float = DEATH_EVENT_WEAPON_MIN_SCORE
+    death_event_weapon_min_score_obs: Optional[float] = DEATH_EVENT_WEAPON_MIN_SCORE_OBS
+    death_event_weapon_min_margin: float = DEATH_EVENT_WEAPON_MIN_MARGIN
+    death_event_use_weapon_template_reactions: bool = DEATH_EVENT_USE_WEAPON_TEMPLATE_REACTIONS
     death_event_reaction_phrases: tuple = DEATH_EVENT_REACTION_PHRASES
 
 
@@ -842,6 +874,8 @@ class RuntimeState:
     last_twitch_comment_time: float = 0.0
     last_screen_event_time: float = 0.0
     last_streamer_fixed_response_time: float = 0.0
+    last_character_break_time: float = 0.0
+    character_break_until: float = 0.0
     last_silent_phrase: Optional[str] = None
 
 def main():
@@ -1099,7 +1133,11 @@ def main():
                         f"matched_address_keyword={decision.get('matched_address_keyword', '')} "
                         f"matched_context_word={decision.get('matched_context_word', '')} "
                         f"keyword_response_id={decision.get('keyword_response_id', '')} "
-                        f"llm_response_mode={decision.get('llm_response_mode', 'normal')}",
+                        f"llm_response_mode={decision.get('llm_response_mode', 'normal')} "
+                        f"character_break_active={decision.get('character_break_active', False)} "
+                        f"character_break_triggered={decision.get('character_break_triggered', False)} "
+                        f"character_break_reason={decision.get('character_break_reason', '')} "
+                        f"character_break_remaining={float(decision.get('character_break_remaining', 0.0) or 0.0):.1f}",
                         flush=True,
                     )
 

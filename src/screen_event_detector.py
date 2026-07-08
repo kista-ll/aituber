@@ -67,6 +67,34 @@ class OcrResult:
 
 
 @dataclass
+class WeaponTemplate:
+    weapon_id: str
+    display_name: str
+    category: str
+    template_path: str
+    processed: np.ndarray
+
+
+@dataclass
+class WeaponTemplateMatchResult:
+    weapon_id: Optional[str]
+    display_name: Optional[str]
+    category: Optional[str]
+    best_score: float
+    second_best_weapon_id: Optional[str]
+    second_best_score: Optional[float]
+    margin: Optional[float]
+    accepted: bool
+    reason: str
+    template_path: str = ""
+    preprocess_mode: str = ""
+    roi: tuple = ()
+    best_weapon_id: str = ""
+    best_display_name: str = ""
+    best_category: str = ""
+
+
+@dataclass
 class DeathDetectionThresholds:
     template_min_score: float = 0.55
     shape_min_template_score: float = 0.40
@@ -200,6 +228,22 @@ def effective_template_path(cfg) -> str:
     return str(_source_override(cfg, "death_event_template_path", "death_event_template_path_obs") or "")
 
 
+def effective_weapon_name_roi(cfg):
+    return _source_override(cfg, "death_event_weapon_name_roi", "death_event_weapon_name_roi_obs")
+
+
+def effective_weapon_min_score(cfg) -> float:
+    value = _source_override(cfg, "death_event_weapon_min_score", "death_event_weapon_min_score_obs")
+    return float(value)
+
+
+def _resolve_project_path(path: str) -> Path:
+    value = Path(path)
+    if not value.is_absolute():
+        value = _project_root() / value
+    return value
+
+
 def _range_score(value: float, low: float, high: float, peak: float) -> float:
     if value < low or value > high:
         return 0.0
@@ -331,6 +375,198 @@ def detect_death_event(image: np.ndarray, cfg, template=None) -> DeathDetectionR
         log_confidence=log_confidence,
         reason=reason,
     )
+
+
+def _weapon_match_enabled(cfg) -> bool:
+    return bool(getattr(cfg, "death_event_weapon_match_enabled", False))
+
+
+def _weapon_preprocess_mode(cfg) -> str:
+    return str(getattr(cfg, "death_event_weapon_preprocess_mode", "sharpen_threshold") or "sharpen_threshold")
+
+
+def preprocess_weapon_name_crop(image: np.ndarray, cfg) -> np.ndarray:
+    mode = _weapon_preprocess_mode(cfg)
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    if mode == "sharpen_threshold":
+        blurred = cv2.GaussianBlur(gray, (0, 0), 1.0)
+        sharpened = cv2.addWeighted(gray, 1.7, blurred, -0.7, 0)
+        _, processed = cv2.threshold(sharpened, 185, 255, cv2.THRESH_BINARY)
+        kernel = np.ones((2, 2), np.uint8)
+        processed = cv2.morphologyEx(processed, cv2.MORPH_CLOSE, kernel)
+    elif mode == "threshold":
+        _, processed = cv2.threshold(gray, 190, 255, cv2.THRESH_BINARY)
+    else:
+        blurred = cv2.GaussianBlur(gray, (0, 0), 1.0)
+        sharpened = cv2.addWeighted(gray, 1.7, blurred, -0.7, 0)
+        _, processed = cv2.threshold(sharpened, 185, 255, cv2.THRESH_BINARY)
+    return processed
+
+
+def _weapon_unknown(cfg, reason: str, roi=None) -> WeaponTemplateMatchResult:
+    return WeaponTemplateMatchResult(
+        weapon_id=None,
+        display_name=None,
+        category=None,
+        best_score=0.0,
+        second_best_weapon_id=None,
+        second_best_score=None,
+        margin=None,
+        accepted=False,
+        reason=reason,
+        preprocess_mode=_weapon_preprocess_mode(cfg),
+        roi=tuple(roi or ()),
+    )
+
+
+def _load_weapon_metadata(metadata_path: Path):
+    if not metadata_path.exists():
+        return []
+    with metadata_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict):
+        data = data.get("weapons", [])
+    return data if isinstance(data, list) else []
+
+
+def load_weapon_templates(cfg) -> List[WeaponTemplate]:
+    if cv2 is None or not _weapon_match_enabled(cfg):
+        return []
+    template_dir = _resolve_project_path(str(getattr(cfg, "death_event_weapon_template_dir", "assets/templates/weapons")))
+    metadata_value = str(
+        getattr(cfg, "death_event_weapon_template_metadata_path", "assets/templates/weapons/weapons.json") or ""
+    )
+    metadata_path = _resolve_project_path(metadata_value) if metadata_value else template_dir / "weapons.json"
+    templates: List[WeaponTemplate] = []
+    try:
+        entries = _load_weapon_metadata(metadata_path)
+    except Exception as e:
+        print(f"[SCREEN] weapon template metadata unreadable path={metadata_path} error={e}", flush=True)
+        return []
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        weapon_id = str(entry.get("id") or "").strip()
+        template_path = str(entry.get("template_path") or "").strip()
+        if not weapon_id or not template_path:
+            continue
+        resolved_path = _resolve_project_path(template_path)
+        image = cv2.imread(str(resolved_path), cv2.IMREAD_COLOR)
+        if image is None or image.size == 0:
+            print(f"[SCREEN] weapon template unreadable path={resolved_path}", flush=True)
+            continue
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        try:
+            processed = preprocess_weapon_name_crop(rgb, cfg)
+        except Exception as e:
+            print(f"[SCREEN] weapon template preprocess failed path={resolved_path} error={e}", flush=True)
+            continue
+        templates.append(WeaponTemplate(
+            weapon_id=weapon_id,
+            display_name=str(entry.get("display_name") or weapon_id),
+            category=str(entry.get("category") or "unknown"),
+            template_path=str(resolved_path),
+            processed=processed,
+        ))
+    return templates
+
+
+def _binary_iou_score(candidate: np.ndarray, template: np.ndarray) -> float:
+    if candidate.shape[:2] != template.shape[:2]:
+        candidate = cv2.resize(candidate, (template.shape[1], template.shape[0]), interpolation=cv2.INTER_AREA)
+        _, candidate = cv2.threshold(candidate, 127, 255, cv2.THRESH_BINARY)
+    cand_mask = candidate > 0
+    tpl_mask = template > 0
+    union = np.logical_or(cand_mask, tpl_mask).sum()
+    if union <= 0:
+        return 0.0
+    intersection = np.logical_and(cand_mask, tpl_mask).sum()
+    return float(intersection / union)
+
+
+def match_death_weapon_template(image: np.ndarray, cfg, templates=None) -> WeaponTemplateMatchResult:
+    if not _weapon_match_enabled(cfg):
+        return _weapon_unknown(cfg, "disabled")
+    if cv2 is None:
+        return _weapon_unknown(cfg, "cv2_unavailable")
+    roi = effective_weapon_name_roi(cfg)
+    if roi in (None, ""):
+        return _weapon_unknown(cfg, "roi_unavailable")
+    if templates is None:
+        templates = load_weapon_templates(cfg)
+    if not templates:
+        return _weapon_unknown(cfg, "no_templates", roi)
+
+    resized = _resize_for_detection(image, cfg)
+    try:
+        crop = crop_roi(resized, roi)
+        processed = preprocess_weapon_name_crop(crop, cfg)
+    except Exception:
+        return _weapon_unknown(cfg, "preprocess_failed", roi)
+
+    scored = []
+    for template in templates:
+        score = _binary_iou_score(processed, template.processed)
+        scored.append((score, template))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    if not scored:
+        return _weapon_unknown(cfg, "no_templates", roi)
+
+    best_score, best_template = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else None
+    second_id = scored[1][1].weapon_id if len(scored) > 1 else None
+    margin = best_score - second_score if second_score is not None else best_score
+    min_score = effective_weapon_min_score(cfg)
+    min_margin = float(getattr(cfg, "death_event_weapon_min_margin", 0.08))
+    if best_score < min_score:
+        reason = "low_score"
+        accepted = False
+    elif margin < min_margin:
+        reason = "low_margin"
+        accepted = False
+    else:
+        reason = "accepted"
+        accepted = True
+
+    return WeaponTemplateMatchResult(
+        weapon_id=best_template.weapon_id if accepted else None,
+        display_name=best_template.display_name if accepted else None,
+        category=best_template.category if accepted else None,
+        best_score=best_score,
+        second_best_weapon_id=second_id,
+        second_best_score=second_score,
+        margin=margin,
+        accepted=accepted,
+        reason=reason,
+        template_path=best_template.template_path,
+        preprocess_mode=_weapon_preprocess_mode(cfg),
+        roi=tuple(roi),
+        best_weapon_id=best_template.weapon_id,
+        best_display_name=best_template.display_name,
+        best_category=best_template.category,
+    )
+
+
+def weapon_match_to_details(result: WeaponTemplateMatchResult) -> dict:
+    return {
+        "weapon_match_enabled": result.reason != "disabled",
+        "weapon_match_weapon_id": result.weapon_id or "",
+        "weapon_match_display_name": result.display_name or "",
+        "weapon_match_category": result.category or "",
+        "weapon_match_best_id": result.best_weapon_id or "",
+        "weapon_match_best_display_name": result.best_display_name or "",
+        "weapon_match_best_category": result.best_category or "",
+        "weapon_match_best_score": result.best_score,
+        "weapon_match_second_best_id": result.second_best_weapon_id or "",
+        "weapon_match_second_best_score": result.second_best_score if result.second_best_score is not None else "",
+        "weapon_match_margin": result.margin if result.margin is not None else "",
+        "weapon_match_accepted": result.accepted,
+        "weapon_match_reason": result.reason,
+        "weapon_match_template_path": result.template_path,
+        "weapon_match_preprocess_mode": result.preprocess_mode,
+        "weapon_match_roi": result.roi,
+    }
 
 
 def _build_capture_target(monitor: dict, cfg) -> dict:
@@ -483,15 +719,19 @@ def create_frame_source(cfg) -> FrameSource:
 
 
 class DeathDetector:
-    def __init__(self, cfg, templates):
+    def __init__(self, cfg, templates, weapon_templates=None):
         self.cfg = cfg
         self.templates = templates
+        self.weapon_templates = weapon_templates or []
 
     def detect(self, image: np.ndarray) -> DeathDetectionResult:
         return detect_death_event(image, self.cfg, self.templates)
 
     def ocr(self, image: np.ndarray) -> OcrResult:
         return ocr_death_text(image, self.cfg)
+
+    def weapon_match(self, image: np.ndarray) -> WeaponTemplateMatchResult:
+        return match_death_weapon_template(image, self.cfg, self.weapon_templates)
 
 
 def format_detection_metrics(result: DeathDetectionResult) -> str:
@@ -739,6 +979,78 @@ def save_ocr_debug_images(
     cv2.imwrite(str(base_dir / f"{prefix}_processed.png"), processed)
 
 
+def save_weapon_match_debug_images(
+    source_name: str,
+    image: np.ndarray,
+    cfg,
+    templates=None,
+    result: Optional[WeaponTemplateMatchResult] = None,
+    output_dir: Optional[str] = None,
+) -> None:
+    if cv2 is None:
+        return
+    base_dir = Path(output_dir or getattr(cfg, "death_event_weapon_debug_dir", "debug/weapon_match"))
+    if not base_dir.is_absolute():
+        base_dir = _project_root() / base_dir
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    roi = effective_weapon_name_roi(cfg)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    roi_text = "none" if roi in (None, "") else "_".join(str(v).replace(".", "p") for v in roi)
+    stem = _safe_name(Path(source_name).stem if source_name else "screen")
+    mode = _weapon_preprocess_mode(cfg)
+    prefix = f"{stem}_weapon_roi-{roi_text}_mode-{mode}_{timestamp}"
+
+    metrics = {
+        "weapon_match_enabled": _weapon_match_enabled(cfg),
+        "weapon_roi": list(roi) if roi not in (None, "") else None,
+        "template_dir": str(_resolve_project_path(str(getattr(cfg, "death_event_weapon_template_dir", "assets/templates/weapons")))),
+        "template_count": len(templates or []),
+        "preprocess_mode": mode,
+    }
+    if roi not in (None, ""):
+        resized = _resize_for_detection(image, cfg)
+        crop = crop_roi(resized, roi)
+        processed = preprocess_weapon_name_crop(crop, cfg)
+        cv2.imwrite(str(base_dir / f"{prefix}_weapon_name_crop.png"), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(str(base_dir / f"{prefix}_weapon_name_processed.png"), processed)
+        if result is not None:
+            best_template = None
+            for template in templates or []:
+                if template.template_path == result.template_path:
+                    best_template = template
+                    break
+            if best_template is not None:
+                best_processed = best_template.processed
+                candidate = processed
+                if candidate.shape[:2] != best_processed.shape[:2]:
+                    candidate = cv2.resize(
+                        candidate, (best_processed.shape[1], best_processed.shape[0]), interpolation=cv2.INTER_AREA
+                    )
+                    _, candidate = cv2.threshold(candidate, 127, 255, cv2.THRESH_BINARY)
+                diff = cv2.absdiff(candidate, best_processed)
+                cv2.imwrite(str(base_dir / f"{prefix}_best_template_processed.png"), best_processed)
+                cv2.imwrite(str(base_dir / f"{prefix}_diff.png"), diff)
+    if result is not None:
+        metrics.update({
+            "weapon_id": result.weapon_id or "",
+            "weapon_display_name": result.display_name or "",
+            "weapon_category": result.category or "",
+            "best_weapon_id": result.best_weapon_id or result.weapon_id or "",
+            "best_display_name": result.best_display_name or result.display_name or "",
+            "best_category": result.best_category or result.category or "",
+            "best_score": result.best_score,
+            "second_best_weapon_id": result.second_best_weapon_id or "",
+            "second_best_score": result.second_best_score,
+            "margin": result.margin,
+            "accepted": result.accepted,
+            "reason": result.reason,
+            "template_path": result.template_path,
+        })
+    with (base_dir / f"{prefix}_weapon_match_metrics.json").open("w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
+
+
 def ocr_death_text(image: np.ndarray, cfg) -> OcrResult:
     mode = _ocr_preprocess_mode(cfg)
     scale = max(1.0, float(getattr(cfg, "death_event_ocr_scale", 3.0)))
@@ -800,6 +1112,7 @@ class ScreenEventDetector:
         self.running = False
         self.thread = None
         self.templates = []
+        self.weapon_templates = []
         self.detector = None
         self.frame_source = None
         self.last_emit_time = 0.0
@@ -822,7 +1135,10 @@ class ScreenEventDetector:
             print("[SCREEN] disabled reason=template_unavailable", flush=True)
             return
         print(f"[SCREEN] templates loaded count={len(self.templates)}", flush=True)
-        self.detector = DeathDetector(self.cfg, self.templates)
+        if _weapon_match_enabled(self.cfg):
+            self.weapon_templates = load_weapon_templates(self.cfg)
+            print(f"[SCREEN] weapon templates loaded count={len(self.weapon_templates)}", flush=True)
+        self.detector = DeathDetector(self.cfg, self.templates, self.weapon_templates)
         self.frame_source = create_frame_source(self.cfg)
         if _ocr_enabled(self.cfg):
             configure_tesseract(self.cfg)
@@ -871,7 +1187,7 @@ class ScreenEventDetector:
             if self.frame_source is None:
                 self.frame_source = create_frame_source(self.cfg)
             if self.detector is None:
-                self.detector = DeathDetector(self.cfg, self.templates)
+                self.detector = DeathDetector(self.cfg, self.templates, self.weapon_templates)
             self.frame_source.start()
             while self.running:
                 start = time.monotonic()
@@ -923,7 +1239,17 @@ class ScreenEventDetector:
                             print("[SCREEN] skip reason=cooldown", flush=True)
                         else:
                             ocr_result = self.detector.ocr(image)
+                            weapon_result = self.detector.weapon_match(image)
                             print(f"[SCREEN] detected type=death {format_detection_metrics(result)}", flush=True)
+                            if _weapon_match_enabled(self.cfg) and debug:
+                                print(
+                                    f"[SCREEN] weapon_match accepted={weapon_result.accepted} "
+                                    f"weapon_id={weapon_result.weapon_id or ''} "
+                                    f"score={weapon_result.best_score:.3f} "
+                                    f"margin={(weapon_result.margin if weapon_result.margin is not None else 0.0):.3f} "
+                                    f"reason={weapon_result.reason}",
+                                    flush=True,
+                                )
                             if _ocr_enabled(self.cfg):
                                 if ocr_result.reason == "ok":
                                     print(
@@ -936,25 +1262,27 @@ class ScreenEventDetector:
                                         f"text={ocr_result.text} confidence={ocr_result.confidence:.1f}",
                                         flush=True,
                                     )
+                            details = {
+                                "final_score": result.final_score,
+                                "template_score": result.template_score,
+                                "shape_score": result.shape_score,
+                                "dark_ratio": result.dark_ratio,
+                                "white_ratio": result.white_ratio,
+                                "cols_with_white": result.cols_with_white,
+                                "rows_with_white": result.rows_with_white,
+                                "ocr_text": ocr_result.text,
+                                "ocr_confidence": ocr_result.confidence,
+                                "ocr_reason": ocr_result.reason,
+                                "ocr_preprocess_mode": ocr_result.preprocess_mode,
+                                "ocr_roi": ocr_result.roi,
+                                "ocr_scale": ocr_result.scale,
+                            }
+                            details.update(weapon_match_to_details(weapon_result))
                             self.output_queue.put(ScreenEvent(
                                 event_type="death",
                                 confidence=result.final_score,
                                 created_at=now,
-                                details={
-                                    "final_score": result.final_score,
-                                    "template_score": result.template_score,
-                                    "shape_score": result.shape_score,
-                                    "dark_ratio": result.dark_ratio,
-                                    "white_ratio": result.white_ratio,
-                                    "cols_with_white": result.cols_with_white,
-                                    "rows_with_white": result.rows_with_white,
-                                    "ocr_text": ocr_result.text,
-                                    "ocr_confidence": ocr_result.confidence,
-                                    "ocr_reason": ocr_result.reason,
-                                    "ocr_preprocess_mode": ocr_result.preprocess_mode,
-                                    "ocr_roi": ocr_result.roi,
-                                    "ocr_scale": ocr_result.scale,
-                                },
+                                details=details,
                             ))
                             self.last_emit_time = now
                     else:
@@ -1020,6 +1348,14 @@ if __name__ == "__main__":
     parser.add_argument("--debug-ocr", action="store_true", help="Print OCR backend settings before running OCR.")
     parser.add_argument("--save-ocr-debug", action="store_true", help="Save OCR crop and processed images.")
     parser.add_argument("--ocr-debug-dir", default=None)
+    parser.add_argument("--weapon-template-match", action="store_true", help="Run experimental weapon-name template matching.")
+    parser.add_argument("--weapon-template-dir", default=None)
+    parser.add_argument("--weapon-template-metadata", default=None)
+    parser.add_argument("--weapon-roi", default=None, help="Override weapon-name ROI as x1,y1,x2,y2.")
+    parser.add_argument("--weapon-preprocess-mode", default=None)
+    parser.add_argument("--save-weapon-debug", action="store_true", help="Save weapon crop, processed image, best template, diff, and metrics.")
+    parser.add_argument("--weapon-debug-dir", default="debug/weapon_match")
+    parser.add_argument("--extract-weapon-crop", action="store_true", help="Save only the configured weapon-name crop for template creation.")
     args = parser.parse_args()
     cli_config = _load_cli_config()
 
@@ -1063,6 +1399,23 @@ if __name__ == "__main__":
         death_event_ocr_debug_dir = args.ocr_debug_dir or _cfg_value(cli_config, "DEATH_EVENT_OCR_DEBUG_DIR", "debug/ocr")
         death_event_ocr_debug_source_name = args.image or str(screen_frame_source)
         screen_event_debug_dir = args.debug_dir or _cfg_value(cli_config, "SCREEN_EVENT_DEBUG_DIR", "debug/screen_event")
+        death_event_weapon_match_enabled = args.weapon_template_match or _cfg_value(cli_config, "DEATH_EVENT_WEAPON_MATCH_ENABLED", False)
+        death_event_weapon_template_dir = args.weapon_template_dir or _cfg_value(
+            cli_config, "DEATH_EVENT_WEAPON_TEMPLATE_DIR", "assets/templates/weapons"
+        )
+        death_event_weapon_template_metadata_path = args.weapon_template_metadata or _cfg_value(
+            cli_config, "DEATH_EVENT_WEAPON_TEMPLATE_METADATA_PATH", "assets/templates/weapons/weapons.json"
+        )
+        death_event_weapon_name_roi = parse_roi(args.weapon_roi) if args.weapon_roi else _cfg_value(
+            cli_config, "DEATH_EVENT_WEAPON_NAME_ROI", None
+        )
+        death_event_weapon_name_roi_obs = _cfg_value(cli_config, "DEATH_EVENT_WEAPON_NAME_ROI_OBS", None)
+        death_event_weapon_preprocess_mode = args.weapon_preprocess_mode or _cfg_value(
+            cli_config, "DEATH_EVENT_WEAPON_PREPROCESS_MODE", "sharpen_threshold"
+        )
+        death_event_weapon_min_score = _cfg_value(cli_config, "DEATH_EVENT_WEAPON_MIN_SCORE", 0.80)
+        death_event_weapon_min_score_obs = _cfg_value(cli_config, "DEATH_EVENT_WEAPON_MIN_SCORE_OBS", None)
+        death_event_weapon_min_margin = _cfg_value(cli_config, "DEATH_EVENT_WEAPON_MIN_MARGIN", 0.08)
 
     if cv2 is None:
         raise SystemExit(f"cv2 is unavailable: {CV2_IMPORT_ERROR}")
@@ -1096,6 +1449,19 @@ if __name__ == "__main__":
     if args.print_detection_metrics:
         print(f"[SCREEN] {format_detection_geometry(rgb, _Cfg)}", flush=True)
 
+    if args.extract_weapon_crop:
+        save_weapon_match_debug_images(
+            args.image or str(_Cfg.screen_frame_source),
+            rgb,
+            _Cfg,
+            [],
+            _weapon_unknown(_Cfg, "extract_crop", effective_weapon_name_roi(_Cfg)),
+            args.weapon_debug_dir,
+        )
+        print(f"[SCREEN] weapon crop saved dir={_resolve_project_path(args.weapon_debug_dir)}", flush=True)
+        if not args.detect and not args.ocr and not args.weapon_template_match:
+            raise SystemExit(0)
+
     tpl = load_templates(effective_template_path(_Cfg))
     result = detect_death_event(rgb, _Cfg, tpl)
     print(result)
@@ -1113,3 +1479,16 @@ if __name__ == "__main__":
         print(f"[SCREEN] debug frames saved dir={saved_dir}", flush=True)
     if args.ocr and result.detected:
         print(ocr_death_text(rgb, _Cfg))
+    if args.weapon_template_match and result.detected:
+        weapon_templates = load_weapon_templates(_Cfg)
+        weapon_result = match_death_weapon_template(rgb, _Cfg, weapon_templates)
+        print(weapon_result)
+        if args.save_weapon_debug:
+            save_weapon_match_debug_images(
+                args.image or str(_Cfg.screen_frame_source),
+                rgb,
+                _Cfg,
+                weapon_templates,
+                weapon_result,
+                args.weapon_debug_dir,
+            )

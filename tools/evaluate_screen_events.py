@@ -8,7 +8,16 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from screen_event_detector import cv2, detect_death_event, ocr_death_text, load_templates, parse_roi  # noqa: E402
+from screen_event_detector import (  # noqa: E402
+    cv2,
+    detect_death_event,
+    load_templates,
+    load_weapon_templates,
+    match_death_weapon_template,
+    ocr_death_text,
+    parse_roi,
+    save_weapon_match_debug_images,
+)
 from screen_event_reactions import select_death_reaction  # noqa: E402
 
 
@@ -40,6 +49,15 @@ class EvalConfig:
     death_event_ocr_category_min_confidence = 60.0
     death_event_weapon_keywords = None
     death_event_reactions_by_category = None
+    death_event_weapon_match_enabled = False
+    death_event_weapon_template_dir = "assets/templates/weapons"
+    death_event_weapon_template_metadata_path = "assets/templates/weapons/weapons.json"
+    death_event_weapon_name_roi = None
+    death_event_weapon_name_roi_obs = None
+    death_event_weapon_preprocess_mode = "sharpen_threshold"
+    death_event_weapon_min_score = 0.80
+    death_event_weapon_min_score_obs = None
+    death_event_weapon_min_margin = 0.08
 
 
 def expected_from_path(path: Path, samples_root: Path):
@@ -89,9 +107,34 @@ def reaction_from_ocr(ocr_result, cfg):
     return select_death_reaction(details, cfg)
 
 
-def as_row(path: Path, samples_root: Path, result, cfg, ocr_result=None):
-    reaction = reaction_from_ocr(ocr_result, cfg) if result.detected else {}
+def weapon_result_columns(weapon_result):
     return {
+        "weapon_match_enabled": str(bool(weapon_result)).lower(),
+        "weapon_id": getattr(weapon_result, "weapon_id", "") or "",
+        "weapon_display_name": getattr(weapon_result, "display_name", "") or "",
+        "weapon_match_category": getattr(weapon_result, "category", "") or "",
+        "weapon_template_category": getattr(weapon_result, "category", "") or "",
+        "weapon_best_id": getattr(weapon_result, "best_weapon_id", "") or "",
+        "weapon_best_display_name": getattr(weapon_result, "best_display_name", "") or "",
+        "weapon_best_category": getattr(weapon_result, "best_category", "") or "",
+        "weapon_best_score": f"{getattr(weapon_result, 'best_score', 0.0):.6f}" if weapon_result is not None else "",
+        "weapon_second_best_id": getattr(weapon_result, "second_best_weapon_id", "") or "",
+        "weapon_second_best_score": (
+            f"{weapon_result.second_best_score:.6f}"
+            if weapon_result is not None and weapon_result.second_best_score is not None else ""
+        ),
+        "weapon_match_margin": (
+            f"{weapon_result.margin:.6f}" if weapon_result is not None and weapon_result.margin is not None else ""
+        ),
+        "weapon_match_accepted": str(getattr(weapon_result, "accepted", False)).lower() if weapon_result is not None else "",
+        "weapon_match_reason": getattr(weapon_result, "reason", "") if weapon_result is not None else "",
+        "weapon_template_path": getattr(weapon_result, "template_path", "") if weapon_result is not None else "",
+    }
+
+
+def as_row(path: Path, samples_root: Path, result, cfg, ocr_result=None, weapon_result=None):
+    reaction = reaction_from_ocr(ocr_result, cfg) if result.detected else {}
+    row = {
         "filename": str(path.relative_to(samples_root)),
         "group": group_from_path(path, samples_root),
         "expected": expected_from_path(path, samples_root),
@@ -118,6 +161,8 @@ def as_row(path: Path, samples_root: Path, result, cfg, ocr_result=None):
         "matched_keywords": ",".join(reaction.get("matched_keywords", ())),
         "category_reason": reaction.get("category_reason", ""),
     }
+    row.update(weapon_result_columns(weapon_result))
+    return row
 
 
 def print_table(rows):
@@ -173,6 +218,13 @@ def main():
     parser.add_argument("--use-weapon-category-reactions", action="store_true", help="Use experimental OCR weapon category reactions.")
     parser.add_argument("--disable-context-reactions", action="store_true", help="Disable context fixed reactions.")
     parser.add_argument("--tesseract-cmd", default="", help="Optional path to tesseract executable.")
+    parser.add_argument("--weapon-template-match", action="store_true", help="Run experimental weapon-name template matching.")
+    parser.add_argument("--weapon-template-dir", default=EvalConfig.death_event_weapon_template_dir)
+    parser.add_argument("--weapon-template-metadata", default=EvalConfig.death_event_weapon_template_metadata_path)
+    parser.add_argument("--weapon-roi", default=None, help="Override weapon-name ROI as x1,y1,x2,y2.")
+    parser.add_argument("--weapon-preprocess-mode", default=EvalConfig.death_event_weapon_preprocess_mode)
+    parser.add_argument("--save-weapon-debug", action="store_true", help="Save weapon template match debug images.")
+    parser.add_argument("--weapon-debug-dir", default="debug/weapon_match")
     args = parser.parse_args()
 
     if cv2 is None:
@@ -195,27 +247,43 @@ def main():
     cfg.death_event_use_weapon_category_reactions = args.use_weapon_category_reactions
     cfg.death_event_use_context_reactions = not args.disable_context_reactions
     cfg.death_event_ocr_tesseract_cmd = args.tesseract_cmd
+    cfg.death_event_weapon_match_enabled = args.weapon_template_match
+    cfg.death_event_weapon_template_dir = args.weapon_template_dir
+    cfg.death_event_weapon_template_metadata_path = args.weapon_template_metadata
+    cfg.death_event_weapon_preprocess_mode = args.weapon_preprocess_mode
+    if args.weapon_roi:
+        cfg.death_event_weapon_name_roi = parse_roi(args.weapon_roi)
     templates = load_templates(args.template)
     if not templates:
         raise SystemExit("no templates loaded.")
+    weapon_templates = load_weapon_templates(cfg) if args.weapon_template_match else []
 
     modes = parse_modes(args.compare_ocr_modes) if args.compare_ocr_modes else [args.ocr_preprocess_mode]
     rois = parse_rois(args.compare_ocr_rois) if args.compare_ocr_rois else [cfg.death_event_ocr_roi]
     rows = []
     for image_path in iter_images(samples_root):
         result = evaluate_image(image_path, cfg, templates)
-        if args.ocr and result.detected:
+        weapon_result = None
+        rgb = None
+        if args.weapon_template_match and result.detected:
             image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
             rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            weapon_result = match_death_weapon_template(rgb, cfg, weapon_templates)
+            if args.save_weapon_debug:
+                save_weapon_match_debug_images(str(image_path), rgb, cfg, weapon_templates, weapon_result, args.weapon_debug_dir)
+        if args.ocr and result.detected:
+            if rgb is None:
+                image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             cfg.death_event_ocr_debug_source_name = str(image_path)
             for roi in rois:
                 cfg.death_event_ocr_roi = roi
                 for mode in modes:
                     cfg.death_event_ocr_preprocess_mode = mode
                     ocr_result = ocr_death_text(rgb, cfg)
-                    rows.append(as_row(image_path, samples_root, result, cfg, ocr_result))
+                    rows.append(as_row(image_path, samples_root, result, cfg, ocr_result, weapon_result))
         else:
-            rows.append(as_row(image_path, samples_root, result, cfg, None))
+            rows.append(as_row(image_path, samples_root, result, cfg, None, weapon_result))
 
     print_table(rows)
 
@@ -231,6 +299,10 @@ def main():
                 "ocr_preprocess_mode", "ocr_roi", "ocr_scale", "ocr_text", "ocr_confidence", "ocr_reason",
                 "normalized_ocr_text", "weapon_category", "emotion_category", "selected_reaction",
                 "reaction_source", "matched_keywords", "category_reason",
+                "weapon_match_enabled", "weapon_id", "weapon_display_name", "weapon_match_category", "weapon_template_category",
+                "weapon_best_id", "weapon_best_display_name", "weapon_best_category",
+                "weapon_best_score", "weapon_second_best_id", "weapon_second_best_score",
+                "weapon_match_margin", "weapon_match_accepted", "weapon_match_reason", "weapon_template_path",
             ])
             writer.writeheader()
             writer.writerows(rows)

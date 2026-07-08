@@ -116,6 +116,35 @@ DEFAULT_STREAMER_FIXED_RESPONSE_PHRASES = {
 }
 
 
+DEFAULT_CHARACTER_BREAK_FIXED_RESPONSE_PHRASES = {
+    "frustration": (
+        "いや今のは普通にきついわね。",
+        "それ通すの、なかなか嫌な感じね。",
+        "今のはちょっと声出るやつね。",
+    ),
+    "close_call": (
+        "惜しい、今のは取れてもよかったわね。",
+        "そこまで行ったなら、もう一回いけるわ。",
+        "今のあと一歩、かなり惜しいわね。",
+    ),
+    "success": (
+        "いいじゃない、ちょっと調子出てきたわね。",
+        "今のはだいぶ気持ちいいわね。",
+        "はい、今のはちゃんと偉いです。",
+    ),
+    "angry": (
+        "はい出ました、嫌なやつですね。",
+        "それはちょっと無理があるわね。",
+        "今のはさすがに文句出るわね。",
+    ),
+    "generic": (
+        "見てるわよ、ちゃんとね。",
+        "その感じ、悪くないわね。",
+        "ちょっと荒れてきたけど、まだいけるわ。",
+    ),
+}
+
+
 DEFAULT_STREAMER_KEYWORD_FIXED_RESPONSES = {
     "self_intro": {
         "keywords": (
@@ -254,6 +283,88 @@ def classify_streamer_utterance(text: str, cfg) -> Dict[str, Any]:
     return {**base, "utterance_type": "generic", "matched_keywords": (), "reason": "no_keyword_match"}
 
 
+def _is_battle_mode(cfg) -> bool:
+    return str(getattr(cfg, "game_mode", "normal") or "normal").strip().lower() == "battle"
+
+
+def _character_break_remaining(now: float, state) -> float:
+    return max(0.0, float(getattr(state, "character_break_until", 0.0) or 0.0) - now)
+
+
+def _character_break_cooldown_remaining(now: float, state, cfg) -> float:
+    return _cooldown_remaining(
+        now,
+        float(getattr(state, "last_character_break_time", 0.0) or 0.0),
+        float(getattr(cfg, "character_break_cooldown_sec", 300.0)),
+    )
+
+
+def maybe_update_character_break(now: float, state, cfg) -> Dict[str, Any]:
+    if not bool(getattr(cfg, "character_break_enabled", False)):
+        return {
+            "character_break_active": False,
+            "character_break_triggered": False,
+            "character_break_remaining": 0.0,
+            "character_break_reason": "disabled",
+        }
+    if not _is_battle_mode(cfg):
+        return {
+            "character_break_active": False,
+            "character_break_triggered": False,
+            "character_break_remaining": 0.0,
+            "character_break_reason": "not_battle_mode",
+        }
+
+    active_remaining = _character_break_remaining(now, state)
+    if active_remaining > 0:
+        return {
+            "character_break_active": True,
+            "character_break_triggered": False,
+            "character_break_remaining": active_remaining,
+            "character_break_reason": "active",
+        }
+
+    cooldown_remaining = _character_break_cooldown_remaining(now, state, cfg)
+    if cooldown_remaining > 0:
+        return {
+            "character_break_active": False,
+            "character_break_triggered": False,
+            "character_break_remaining": cooldown_remaining,
+            "character_break_reason": "cooldown",
+        }
+
+    rate = min(1.0, max(0.0, float(getattr(cfg, "character_break_rate", 0.02))))
+    if random.random() > rate:
+        return {
+            "character_break_active": False,
+            "character_break_triggered": False,
+            "character_break_remaining": 0.0,
+            "character_break_reason": "rate_miss",
+        }
+
+    duration = max(0.0, float(getattr(cfg, "character_break_duration_sec", 20.0)))
+    setattr(state, "last_character_break_time", now)
+    setattr(state, "character_break_until", now + duration)
+    return {
+        "character_break_active": True,
+        "character_break_triggered": True,
+        "character_break_remaining": duration,
+        "character_break_reason": "triggered",
+    }
+
+
+def select_character_break_fixed_response(utterance_type: str, cfg) -> str:
+    phrases_by_type = _get_mapping(
+        cfg,
+        "character_break_fixed_response_phrases",
+        DEFAULT_CHARACTER_BREAK_FIXED_RESPONSE_PHRASES,
+    )
+    phrases = tuple(p for p in phrases_by_type.get(utterance_type, ()) if p)
+    if not phrases:
+        phrases = tuple(p for p in phrases_by_type.get("generic", ()) if p)
+    return random.choice(phrases) if phrases else ""
+
+
 def select_streamer_fixed_response(utterance_type: str, cfg) -> str:
     phrases_by_type = _get_mapping(
         cfg,
@@ -312,6 +423,10 @@ def _decision_base(classification: Dict[str, Any]) -> Dict[str, Any]:
         "matched_context_word": classification.get("matched_context_word", ""),
         "keyword_response_id": "",
         "llm_response_mode": "normal",
+        "character_break_active": False,
+        "character_break_triggered": False,
+        "character_break_remaining": 0.0,
+        "character_break_reason": "",
     }
 
 
@@ -399,13 +514,22 @@ def decide_streamer_response(text: str, now: float, state, cfg) -> Dict[str, Any
                 "matched_keywords": matched_keywords,
                 "cooldown_remaining": fixed_remaining,
             }
-        phrase = select_streamer_fixed_response(utterance_type, cfg)
+        character_break = maybe_update_character_break(now, state, cfg)
+        phrase = ""
+        reason = "emotion_match" if utterance_type in fixed_types else "generic_fixed"
+        if character_break["character_break_active"]:
+            phrase = select_character_break_fixed_response(utterance_type, cfg)
+            if phrase:
+                reason = "character_break_fixed"
+        if not phrase:
+            phrase = select_streamer_fixed_response(utterance_type, cfg)
         if phrase:
             return {
                 **base,
+                **character_break,
                 "action": "fixed_phrase",
                 "phrase": phrase,
-                "reason": "emotion_match" if utterance_type in fixed_types else "generic_fixed",
+                "reason": reason,
                 "matched_keywords": matched_keywords,
                 "cooldown_remaining": 0.0,
             }

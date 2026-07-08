@@ -176,6 +176,14 @@ STREAMER_KEYWORD_FIXED_RESPONSES = {
 }
 STREAMER_REACTION_DEBUG_LOG = False
 
+# Phase7: 低頻度キャラ崩壊モード。battle中の固定文だけを一時的に少し崩します。
+# LLMには使わず、Twitchコメント/呼びかけ/画面イベントには影響しません。
+CHARACTER_BREAK_ENABLED = False
+CHARACTER_BREAK_RATE = 0.02
+CHARACTER_BREAK_DURATION_SEC = 20.0
+CHARACTER_BREAK_COOLDOWN_SEC = 300.0
+CHARACTER_BREAK_FIXED_RESPONSE_PHRASES = None  # None の場合は標準の安全な固定文セットを使います。
+
 # --- Game Mode ---
 GAME_MODE = "normal"  # "normal" or "battle"
 
@@ -267,6 +275,16 @@ DEATH_EVENT_REACTIONS_BY_CATEGORY = None  # None の場合は標準の死亡状�
 DEATH_EVENT_UNKNOWN_USE_LLM = False  # Phase3では未使用。将来拡張用です。
 DEATH_EVENT_UNKNOWN_LLM_RATE = 0.2
 DEATH_EVENT_UNKNOWN_LLM_COOLDOWN_SEC = 60.0
+DEATH_EVENT_WEAPON_MATCH_ENABLED = False  # OCR代替の武器名テンプレート比較。まずはCSV/debug検証用です。
+DEATH_EVENT_WEAPON_TEMPLATE_DIR = "assets/templates/weapons"
+DEATH_EVENT_WEAPON_TEMPLATE_METADATA_PATH = "assets/templates/weapons/weapons.json"
+DEATH_EVENT_WEAPON_NAME_ROI = None  # 例: (0.40, 0.30, 0.62, 0.45)。未設定なら比較しません。
+DEATH_EVENT_WEAPON_NAME_ROI_OBS = None
+DEATH_EVENT_WEAPON_PREPROCESS_MODE = "sharpen_threshold"
+DEATH_EVENT_WEAPON_MIN_SCORE = 0.80
+DEATH_EVENT_WEAPON_MIN_SCORE_OBS = None
+DEATH_EVENT_WEAPON_MIN_MARGIN = 0.08
+DEATH_EVENT_USE_WEAPON_TEMPLATE_REACTIONS = False  # 後続Phase用。現時点では発話に接続しません。
 DEATH_EVENT_REACTION_PHRASES = (
     "今のはきついですね。",
     "これは悔しいですね。",
