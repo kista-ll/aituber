@@ -1,1 +1,140 @@
-[]
+[
+  {
+    "id": "fifty_two_galon",
+    "display_name": ".52ガロン",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/fifty_two_galon.png"
+  },
+  {
+    "id": "ultra_hanko",
+    "display_name": "ウルトラハンコ",
+    "category": "special",
+    "template_path": "assets/templates/weapons/ultra_hanko.png"
+  },
+  {
+    "id": "liter_4k",
+    "display_name": "リッター4K",
+    "category": "charger",
+    "template_path": "assets/templates/weapons/liter_4k.png"
+  },
+  {
+    "id": "nova_blaster_neo",
+    "display_name": "ノヴァブラスターネオ",
+    "category": "blaster",
+    "template_path": "assets/templates/weapons/nova_blaster_neo.png"
+  },
+  {
+    "id": "quad_hopper_black",
+    "display_name": "クアッドホッパーブラック",
+    "category": "maneuver",
+    "template_path": "assets/templates/weapons/quad_hopper_black.png"
+  },
+  {
+    "id": "splattershot_collab",
+    "display_name": "スプラシューターコラボ",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/splattershot_collab.png"
+  },
+  {
+    "id": "sharp_marker_neo",
+    "display_name": "シャープマーカーネオ",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/sharp_marker_neo.png"
+  },
+  {
+    "id": "jim_wiper",
+    "display_name": "ジムワイパー",
+    "category": "splatana",
+    "template_path": "assets/templates/weapons/jim_wiper.png"
+  },
+  {
+    "id": "n_zap85",
+    "display_name": "N-ZAP85",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/n_zap85_20260710_01a.png"
+  },
+  {
+    "id": "n_zap85",
+    "display_name": "N-ZAP85",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/n_zap85_20260710_01b.png"
+  },
+  {
+    "id": "dynamo_roller",
+    "display_name": "ダイナモローラー",
+    "category": "roller",
+    "template_path": "assets/templates/weapons/dynamo_roller_20260710_01.png"
+  },
+  {
+    "id": "splattershot_collab",
+    "display_name": "スプラシューターコラボ",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/splattershot_collab_20260710_01.png"
+  },
+  {
+    "id": "fifty_two_galon",
+    "display_name": ".52ガロン",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/fifty_two_galon_20260710_02.png"
+  },
+  {
+    "id": "splattershot",
+    "display_name": "スプラシューター",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/splattershot_20260710_02.png"
+  },
+  {
+    "id": "n_zap85",
+    "display_name": "N-ZAP85",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/n_zap85_20260710_01c.png"
+  },
+  {
+    "id": "lact_450_milk",
+    "display_name": "LACT-450MILK",
+    "category": "stringer",
+    "template_path": "assets/templates/weapons/lact_450_milk_20260711_01.png"
+  },
+  {
+    "id": "order_shooter_replica",
+    "display_name": "オーダーシューター レプリカ",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/order_shooter_replica_20260711_01.png"
+  },
+  {
+    "id": "fincent",
+    "display_name": "フィンセント",
+    "category": "brush",
+    "template_path": "assets/templates/weapons/fincent_20260711_02a.png"
+  },
+  {
+    "id": "fincent",
+    "display_name": "フィンセント",
+    "category": "brush",
+    "template_path": "assets/templates/weapons/fincent_20260711_02b.png"
+  },
+  {
+    "id": "n_zap89",
+    "display_name": "N-ZAP89",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/n_zap89_20260711_03.png"
+  },
+  {
+    "id": "dual_sweeper",
+    "display_name": "デュアルスイーパー",
+    "category": "maneuver",
+    "template_path": "assets/templates/weapons/dual_sweeper_20260711_04.png"
+  },
+  {
+    "id": "prime_shooter",
+    "display_name": "プライムシューター",
+    "category": "shooter",
+    "template_path": "assets/templates/weapons/prime_shooter_20260711_04.png"
+  },
+  {
+    "id": "quick_bomb",
+    "display_name": "クイックボム",
+    "category": "bomb",
+    "template_path": "assets/templates/weapons/quick_bomb_20260711_04.png"
+  }
+]

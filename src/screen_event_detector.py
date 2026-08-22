@@ -514,8 +514,13 @@ def match_death_weapon_template(image: np.ndarray, cfg, templates=None) -> Weapo
         return _weapon_unknown(cfg, "no_templates", roi)
 
     best_score, best_template = scored[0]
-    second_score = scored[1][0] if len(scored) > 1 else None
-    second_id = scored[1][1].weapon_id if len(scored) > 1 else None
+    second_score = None
+    second_id = None
+    for score, template in scored[1:]:
+        if template.weapon_id != best_template.weapon_id:
+            second_score = score
+            second_id = template.weapon_id
+            break
     margin = best_score - second_score if second_score is not None else best_score
     min_score = effective_weapon_min_score(cfg)
     min_margin = float(getattr(cfg, "death_event_weapon_min_margin", 0.08))
