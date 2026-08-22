@@ -16,6 +16,7 @@ END_SILENCE_SECONDS = 0.7
 WHISPER_MODEL_SIZE = "medium"   # small/medium
 WHISPER_DEVICE = "cuda"        # "cuda" or "cpu"
 WHISPER_COMPUTE_TYPE = "float16"
+STT_HOTWORDS = ("しずく", "月野しずく", "しずくちゃん")
 
 # --- LLM (Ollama) ---
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
@@ -151,7 +152,7 @@ STREAMER_UTTERANCE_KEYWORDS = None  # None の場合は標準分類キーワー�
 STREAMER_FIXED_RESPONSE_PHRASES = None  # None の場合は標準固定文を使います。
 
 # 呼びかけ判定。弱一致は文脈語がある場合だけ「しずく」への呼びかけとして扱います。
-SHIZUKU_ADDRESS_STRONG_KEYWORDS = ("しずく", "雫", "しづく", "シズク", "しずくちゃん", "しーちゃん")
+SHIZUKU_ADDRESS_STRONG_KEYWORDS = ("しずく", "静く", "雫", "しづく", "シズク", "しずくちゃん", "しーちゃん")
 SHIZUKU_ADDRESS_WEAK_KEYWORDS = ("しず", "シズ", "しずこ", "静岡", "しずおか", "しずか", "続く")
 SHIZUKU_ADDRESS_CONTEXT_WORDS = (
     "どう", "今の", "これ", "見て", "聞いて", "思う", "教えて", "お願い", "反応して",

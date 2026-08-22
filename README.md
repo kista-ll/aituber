@@ -90,6 +90,7 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | `SHIZUKU_ADDRESS_STRONG_KEYWORDS` | `("しずく", "雫", ...)` | 単独で呼びかけとして扱う強一致キーワードです。 |
 | `SHIZUKU_ADDRESS_WEAK_KEYWORDS` | `("しず", "静岡", ...)` | 文脈語がある場合だけ呼びかけとして扱う弱一致キーワードです。 |
 | `SHIZUKU_ADDRESS_CONTEXT_WORDS` | `("どう", "今の", ...)` | 弱一致を呼びかけ扱いにする文脈語です。 |
+| `STT_HOTWORDS` | `("しずく", "月野しずく", "しずくちゃん")` | faster-whisperへ渡す固有名詞ヒントです。STTが呼びかけを別表記へ誤認識しにくくします。 |
 | `LLM_ADDRESS_RESPONSE_MAX_CHARS` | `160` | 呼びかけLLM応答だけに使う最大文字数です。 |
 | `LLM_ADDRESS_RESPONSE_MAX_SENTENCES` | `4` | 呼びかけLLM応答の最大文数です。 |
 | `STREAMER_KEYWORD_FIXED_RESPONSE_ENABLED` | `True` | 自己紹介などの定型キーワード固定応答を有効にします。 |
@@ -121,8 +122,11 @@ LLMを使用せず直接TTS（音声合成）を呼び出すため、通常会�
 | `静岡、今のどう？` | `addressed` |
 | `しず、これどう？` | `addressed` |
 | `続く、どう思う？` | `addressed` |
+| `静く` | `addressed` |
 | `静岡に行きたい` | 呼びかけにしない |
 | `続くと思う` | 呼びかけにしない |
+
+STTが「しずく」を `静く` と認識した場合は強一致で吸収します。`続く` は通常の文章にも現れるため弱一致のまま扱い、`どう` や `今の` などの文脈語がある場合だけ呼びかけになります。
 
 定型キーワード固定応答の例:
 

@@ -84,6 +84,11 @@ def config_value(name, default):
 
 
 AI_SPEECH_COOLDOWN_SEC = config_value("AI_SPEECH_COOLDOWN_SEC", 8.0)
+_STT_HOTWORDS = config_value("STT_HOTWORDS", ("しずく", "月野しずく", "しずくちゃん"))
+if isinstance(_STT_HOTWORDS, str):
+    STT_HOTWORDS = (_STT_HOTWORDS.strip(),) if _STT_HOTWORDS.strip() else ()
+else:
+    STT_HOTWORDS = tuple(str(word).strip() for word in (_STT_HOTWORDS or ()) if str(word).strip())
 STREAMER_RESPONSE_PROBABILITY = config_value("STREAMER_RESPONSE_PROBABILITY", 0.25)
 SHIZUKU_CALL_KEYWORDS = config_value("SHIZUKU_CALL_KEYWORDS", ("しずく", "シズク", "雫"))
 STREAMER_FORCE_REPLY_KEYWORDS = config_value("STREAMER_FORCE_REPLY_KEYWORDS", ("しずく", "どう思う", "見て", "聞いて"))
@@ -96,7 +101,7 @@ STREAMER_UTTERANCE_KEYWORDS = config_value("STREAMER_UTTERANCE_KEYWORDS", None)
 STREAMER_FIXED_RESPONSE_PHRASES = config_value("STREAMER_FIXED_RESPONSE_PHRASES", None)
 SHIZUKU_ADDRESS_STRONG_KEYWORDS = config_value(
     "SHIZUKU_ADDRESS_STRONG_KEYWORDS",
-    ("しずく", "雫", "しづく", "シズク", "しずくちゃん", "しーちゃん"),
+    ("しずく", "静く", "雫", "しづく", "シズク", "しずくちゃん", "しーちゃん"),
 )
 SHIZUKU_ADDRESS_WEAK_KEYWORDS = config_value(
     "SHIZUKU_ADDRESS_WEAK_KEYWORDS",
@@ -241,6 +246,7 @@ class Config:
     whisper_model_size: str = WHISPER_MODEL_SIZE
     whisper_device: str = WHISPER_DEVICE
     whisper_compute_type: str = WHISPER_COMPUTE_TYPE
+    stt_hotwords: tuple = STT_HOTWORDS
 
     ollama_base_url: str = OLLAMA_BASE_URL
     ollama_model: str = OLLAMA_MODEL
@@ -590,6 +596,7 @@ class STT:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         print(f"[INIT] WhisperModel size={cfg.whisper_model_size} device={cfg.whisper_device} compute={cfg.whisper_compute_type}", flush=True)
+        print(f"[STT] hotwords_enabled={bool(cfg.stt_hotwords)}", flush=True)
         self.model = WhisperModel(
             cfg.whisper_model_size,
             device=cfg.whisper_device,
@@ -602,6 +609,7 @@ class STT:
             language="ja",
             vad_filter=False,
             beam_size=2,
+            hotwords=" ".join(self.cfg.stt_hotwords) or None,
         )
         return "".join(seg.text for seg in segments).strip()
 
