@@ -9,6 +9,8 @@ WEAPON_CATEGORY_PRIORITY = (
     "charger",
     "blaster",
     "roller",
+    "spinner",
+    "shelter",
     "slosher",
     "maneuver",
     "brush",
@@ -40,6 +42,21 @@ DEFAULT_DEATH_EVENT_WEAPON_KEYWORDS = {
         "クラッシュ",
         "ノヴァ",
         "ラピッド",
+    ),
+    "spinner": (
+        "スピナー",
+        "バレル",
+        "ハイドラ",
+        "クーゲル",
+        "ノーチラス",
+        "イグザミナー",
+    ),
+    "shelter": (
+        "シェルター",
+        "パラシェルター",
+        "キャンピング",
+        "スパイガジェット",
+        "24式張替傘",
     ),
     "slosher": (
         "スロッシャー",
@@ -108,6 +125,8 @@ DEFAULT_DEATH_EVENT_EMOTIONS_BY_CATEGORY = {
     "roller": ("fear", "frustration"),
     "charger": ("annoyance", "respect"),
     "blaster": ("annoyance", "frustration"),
+    "spinner": ("annoyance", "frustration"),
+    "shelter": ("annoyance", "frustration"),
     "slosher": ("annoyance", "frustration"),
     "shooter": ("respect", "frustration"),
     "maneuver": ("annoyance", "respect"),
@@ -127,14 +146,14 @@ DEFAULT_DEATH_EVENT_REACTIONS_BY_CATEGORY = {
             "そこまで詰められたら無理よ。",
         ),
         "frustration": (
-            "今の距離はさすがにきついわ。",
-            "あれは避けるの難しいわね。",
+            "またローラー……そのゴリ押し、もう見飽きたわ。",
+            "塗りながら来るの、本当に面倒。",
         ),
     },
     "charger": {
         "annoyance": (
-            "射線、嫌すぎるわ。",
-            "見てたのね、相手。",
+            "遠くから抜いてくるの、本当に面倒くさいわ。",
+            "近づく前に撃つの、いい加減にして。",
         ),
         "respect": (
             "今の抜き方はうまいわね。",
@@ -147,8 +166,28 @@ DEFAULT_DEATH_EVENT_REACTIONS_BY_CATEGORY = {
             "今の届くの、嫌すぎるわ。",
         ),
         "frustration": (
-            "爆風の距離感、難しいわね。",
-            "あれを避けるのはきついわ。",
+            "また爆風……直撃じゃないのが余計むかつくわ。",
+            "爆風頼り、いい加減にしてほしいわ。",
+        ),
+    },
+    "spinner": {
+        "annoyance": (
+            "いつまで弾ばら撒いてんのよ、うるさいわね。",
+            "回しっぱなしで撃つの、本当に面倒。",
+        ),
+        "frustration": (
+            "またスピナー……その弾幕、いい加減にして。",
+            "弾の量で押し切るの、納得いかないわ。",
+        ),
+    },
+    "shelter": {
+        "annoyance": (
+            "また傘開いてる……その守り、本当に面倒。",
+            "傘に隠れて粘るの、いい加減にしなさいよ。",
+        ),
+        "frustration": (
+            "その傘、いつまで攻撃止めるのよ。",
+            "守りながら詰めてくるの、ほんと嫌。",
         ),
     },
     "slosher": {
@@ -157,8 +196,8 @@ DEFAULT_DEATH_EVENT_REACTIONS_BY_CATEGORY = {
             "上から来るの、嫌すぎるわ。",
         ),
         "frustration": (
-            "今の角度はきついわね。",
-            "その当たり方は悔しいわ。",
+            "バケツぶちまけるだけで当たるの、納得いかないわ。",
+            "その曲射、変なところから当たりすぎなのよ。",
         ),
     },
     "shooter": {
@@ -167,14 +206,14 @@ DEFAULT_DEATH_EVENT_REACTIONS_BY_CATEGORY = {
             "今の詰め方はきれいだったわ。",
         ),
         "frustration": (
-            "撃ち合い、惜しかったわね。",
-            "あと少しで返せそうだったわ。",
+            "はぁ……連射だけで勝った気になってるの？",
+            "弾ばら撒くだけなら誰でもできるんだけど",
         ),
     },
     "maneuver": {
         "annoyance": (
-            "スライドでずらされるの嫌ね。",
-            "その動き、追いにくいわね。",
+            "スライドで逃げ回るの、いい加減にしなさいよ。",
+            "その動き、追いかけるだけで疲れるわ。",
         ),
         "respect": (
             "相手の動き、かなり細かいわ。",
@@ -187,14 +226,14 @@ DEFAULT_DEATH_EVENT_REACTIONS_BY_CATEGORY = {
             "はいはい、そういう近づき方ね。",
         ),
         "annoyance": (
-            "筆の距離感、面倒ね。",
-            "近づかれると嫌な相手ね。",
+            "その走り回る筆、本当に落ち着きないわね。",
+            "筆で撫でながら来るの、ほんと面倒。",
         ),
     },
     "splatana": {
         "fear": (
-            "ワイパーの圧、怖いわね。",
-            "その一振りは重いわ。",
+            "またワイパー……振り回すだけで届きすぎなのよ。",
+            "その一振り、判定広すぎじゃない？",
         ),
         "respect": (
             "今の間合い、相手が上手いわ。",
@@ -203,8 +242,8 @@ DEFAULT_DEATH_EVENT_REACTIONS_BY_CATEGORY = {
     },
     "stringer": {
         "annoyance": (
-            "弓の置き方、いやらしいわね。",
-            "遠くから刺さるの嫌ね。",
+            "その弓、変なところから当ててくるのやめなさいよ。",
+            "チャージ長いくせに、しっかり当ててくるの腹立つわ。",
         ),
         "respect": (
             "今の狙い、よく見てたわ。",
